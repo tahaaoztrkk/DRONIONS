@@ -35,7 +35,9 @@ class DetectionCandidate:
     # Geometry
     # --------------------------------------------------
 
-    area: float = 0.0
+    pixel_area: float = 0.0
+
+    relative_area: float = 0.0
 
     aspect_ratio: float = 1.0
 
@@ -74,6 +76,28 @@ class DetectionCandidate:
     gemini_verified: bool = False
 
     description: str = ""
+
+    # --------------------------------------------------
+# Image Information
+# --------------------------------------------------
+
+    image_width: int = 0
+
+    image_height: int = 0
+
+    width: int = 0
+
+    height: int = 0
+
+    normalized_center: Tuple[float, float] = (0.0, 0.0)
+
+    normalized_bbox: Tuple[float, float, float, float] = (
+    0.0,
+    0.0,
+    0.0,
+    0.0,)
+
+    timestamp: float = 0.0
 
     # --------------------------------------------------
 
