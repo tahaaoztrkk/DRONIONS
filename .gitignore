@@ -7,3 +7,5 @@ models/
 .venv/
 venv/
 weights/
+
+.env
