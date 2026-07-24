@@ -14,10 +14,11 @@ os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "loglevel;quiet"
 
 import cv2
-from config import CAMERA_SOURCE
+from config import CAMERA_SOURCE, VOICE_ENABLED
 from assistant.command_parser import parse_command
 from assistant.agent import capture_and_analyze
 from assistant.speech import speak
+from assistant.listen import get_voice_input
 from utils.logger import log_event
 
 from perception.detector import YOLOWorldDetector
@@ -41,7 +42,7 @@ def get_console_input(q: queue.Queue):
 
 def main():
     log_event("Initializing DRONIONS AI (Hybrid VLM + YOLO) pipeline...")
-    speak("Sistem başlatıldı, komut bekliyorum.")
+    speak("System activated. I am listening for your commands.")
     
     # Initialize YOLO components but keep them idle until tracking starts
     detector = YOLOWorldDetector()
@@ -55,8 +56,15 @@ def main():
     VLM_CHECK_INTERVAL = 5.0 # Free-tier limitlerine takılmamak için 5 saniyede bir kontrol eder
     
     cmd_queue = queue.Queue()
+    
+    # Klavye dinleyicisi
     input_thread = threading.Thread(target=get_console_input, args=(cmd_queue,), daemon=True)
     input_thread.start()
+    
+    # Ses dinleyicisi (Mikrofon)
+    if VOICE_ENABLED:
+        voice_thread = threading.Thread(target=get_voice_input, args=(cmd_queue,), daemon=True)
+        voice_thread.start()
     
     cap = cv2.VideoCapture(CAMERA_SOURCE)
     
@@ -103,9 +111,22 @@ def main():
                 
                 current_time = time.time()
                 if current_time - last_vlm_check_time > VLM_CHECK_INTERVAL:
+                    # Check for Visual Memory Bank image
+                    target_clean = target.lower().strip()
+                    target_underscore = target_clean.replace(" ", "_")
+                    ref_path = None
+                    for ext in [".jpg", ".png", ".jpeg"]:
+                        for name in [target_clean, target_underscore]:
+                            path = os.path.join("memory", name + ext)
+                            if os.path.exists(path):
+                                ref_path = path
+                                break
+                        if ref_path:
+                            break
+                            
                     # Call Gemini API
                     if frame is not None:
-                        result = capture_and_analyze(frame, target)
+                        result = capture_and_analyze(frame, target, reference_img_path=ref_path)
                     else:
                         result = {"found": False, "message": "Kamera görüntüsü alınamadı, lütfen kameranızı kontrol edin."}
                         

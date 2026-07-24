@@ -5,3 +5,5 @@ transformers
 google-genai
 opencv-python
 SpeechRecognition
+pyttsx3
+PyAudio

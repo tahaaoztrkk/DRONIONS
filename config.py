@@ -13,4 +13,4 @@ CAMERA_SOURCE = "http://10.116.143.7:8080/video"
 CONFIDENCE_THRESHOLD = 0.5
 USE_GEMINI = True
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-VOICE_ENABLED = False  # Disabled for now based on user feedback
+VOICE_ENABLED = False
