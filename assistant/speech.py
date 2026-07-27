@@ -5,14 +5,17 @@ from config import VOICE_ENABLED
 import pyttsx3
 import threading
 import queue
-import pythoncom
+import sys
+if sys.platform == 'win32':
+    import pythoncom
 
 speech_queue = queue.Queue()
 
 def tts_worker():
     try:
         # Windows COM nesnelerini arka planda kullanabilmek için gerekli
-        pythoncom.CoInitialize()
+        if sys.platform == 'win32':
+            pythoncom.CoInitialize()
         engine = pyttsx3.init()
         engine.setProperty('rate', 160)
         
