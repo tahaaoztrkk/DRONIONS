@@ -43,7 +43,7 @@ from perception.loader import load_model
 
 from perception.candidate import DetectionCandidate
 
-from utils.prompts import get_prompts
+from utils.prompts import get_prompts, get_negative_prompts
 
 
 class YOLOWorldDetector:
@@ -63,6 +63,8 @@ class YOLOWorldDetector:
 
         self.prompts = []
 
+        self.negative_prompts = []
+
     # --------------------------------------------------
 
     def set_target(self, target: str):
@@ -71,7 +73,16 @@ class YOLOWorldDetector:
 
         self.prompts = get_prompts(self.target)
 
-        self.model.set_classes(self.prompts)
+        # Negative prompts are handed to the model as ordinary classes so that
+        # background structures have a class of their own to land in, then
+        # dropped in _parse_result. Without them an open-vocabulary detector
+        # has to assign every box its best-matching *positive* class, which is
+        # how a 3 m wall came back labelled "cardboard box". Measured on one
+        # frame: the real box went from 0.359 to 0.566 confidence with these
+        # in place.
+        self.negative_prompts = get_negative_prompts(self.target)
+
+        self.model.set_classes(self.prompts + self.negative_prompts)
 
     # --------------------------------------------------
 
@@ -140,7 +151,12 @@ class YOLOWorldDetector:
             cls_id = int(box.cls[0].cpu().numpy())
             
             # Label might be mapped from prompt list
-            label = self.prompts[cls_id] if cls_id < len(self.prompts) else str(cls_id)
+            all_classes = self.prompts + self.negative_prompts
+            label = all_classes[cls_id] if cls_id < len(all_classes) else str(cls_id)
+
+            # Detection landed in a negative class -- background, not target.
+            if label in self.negative_prompts:
+                continue
 
             cand = DetectionCandidate(
                 label=label,

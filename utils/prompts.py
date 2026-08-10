@@ -90,6 +90,18 @@ PROMPT_DATABASE: Dict[str, List[str]] = {
     "wallet": [
         "wallet",
         "leather wallet"
+    ],
+
+    # Measured on a real frame: the bare prompt "box" matched only the 3 m
+    # red wall (conf 0.230) and missed the actual cardboard box entirely.
+    # Adding these four put the real box top of the list at 0.359, and 0.566
+    # once the negatives below were in play.
+    "box": [
+        "cardboard box",
+        "carton",
+        "brown box",
+        "package",
+        "shipping box"
     ]
 }
 
@@ -107,6 +119,21 @@ NEGATIVE_DATABASE: Dict[str, List[str]] = {
     "phone": [
         "tablet",
         "remote control"
+    ],
+
+    # Giving the detector somewhere else to put big flat rectangular surfaces
+    # stops them being forced into the target class.
+    #
+    # Deliberately NOT including "floor"/"ground": measured on a real frame,
+    # adding them flipped the ranking the wrong way (wall 0.491 over box 0.448,
+    # versus box 0.566 over wall 0.531 without them). Negatives compete with
+    # the positives for the same detections, so a negative that matches a large
+    # part of the scene distorts the rest of the scores. Keep them to things
+    # actually being confused for the target.
+    "box": [
+        "wall",
+        "barrier",
+        "panel"
     ]
 }
 

@@ -1,5 +1,6 @@
 ultralytics
 supervision
+trackers
 torch
 transformers
 google-genai
@@ -8,3 +9,4 @@ SpeechRecognition
 pyttsx3
 PyAudio
 python-dotenv
+pymavlink
