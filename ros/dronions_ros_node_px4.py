@@ -83,6 +83,7 @@ from assistant.dialogue import Dialogue
 from assistant.speech import speak
 from assistant.listen import get_voice_input
 from utils.logger import log_event
+from utils.prompts import get_prompts
 
 from perception.detector import YOLOWorldDetector
 from perception.filters import filter_candidates
@@ -974,6 +975,18 @@ def main():
                     # Arm YOLO now, not at the hand-off to tracking: it is
                     # the screening layer during the search from here on.
                     detector.set_target(target)
+                    # A target with no entry in the prompt database falls back
+                    # to itself, and YOLO-World is markedly weaker on one
+                    # phrasing than on four. That degradation used to be
+                    # invisible: a whole flight searched for "key" on a single
+                    # prompt while the "keys" entry sat unused.
+                    prompts = get_prompts(target)
+                    if len(prompts) == 1:
+                        log_event(f"Uyari: '{target}' icin prompt genislemesi yok "
+                                  f"-- tek ifadeyle araniyor, tespit zayif olabilir.")
+                    else:
+                        log_event(f"'{target}' icin {len(prompts)} prompt: "
+                                  f"{', '.join(prompts)}")
                     last_vlm_check_time = 0
                     # A new target supersedes whatever is being chased, so the
                     # old lock has to go with it -- otherwise the drone keeps

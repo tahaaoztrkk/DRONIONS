@@ -156,6 +156,14 @@ def get_prompts(target: str) -> List[str]:
     if target in PROMPT_DATABASE:
         return PROMPT_DATABASE[target]
 
+    # Near-misses cost as much as a completely unknown word: the lookup is on
+    # an exact string, so "key" missed the "keys" entry and a whole flight
+    # searched on one prompt instead of four. Nothing said so at the time,
+    # which is what made it worth handling rather than just documenting.
+    for variant in (target + "s", target.rstrip("s")):
+        if variant != target and variant in PROMPT_DATABASE:
+            return PROMPT_DATABASE[variant]
+
     return [target]
 
 
