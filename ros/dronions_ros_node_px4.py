@@ -124,6 +124,18 @@ WAYPOINT_TIMEOUT = 25.0     # s
 # Consecutive obstacle contacts while pursuing one waypoint before giving up
 # on it. 2 = one retry from a different random turn direction.
 BLOCKED_HITS_BEFORE_SKIP = 2
+
+# Multiplier on the sweep's own traversal estimate before the search is
+# abandoned. The estimate assumes clear air and perfect tracking; avoidance
+# turns cost AVOID_TURN_SECONDS each, a climb over the wall restarts a
+# waypoint, and every VLM check holds station for the length of an API call.
+SEARCH_TIMEOUT_MARGIN = 1.6
+
+# How often the sweep records where it actually is. There was no position
+# trace at all, so a nineteen-metre excursion left nothing in the log to
+# diagnose it from -- only the moment tracking noticed, long afterwards.
+POSE_LOG_INTERVAL = 10.0        # s
+STRAY_REPORT_INTERVAL = 5.0     # s
 # Before abandoning a blocked waypoint, try going *over* the obstacle. This is
 # the quadrotor's one real advantage over the ground rig and nothing in the
 # search used it: the sweep flew at a fixed altitude, so a wall taller than
@@ -161,6 +173,11 @@ ARRIVAL_CONFIRM_FRAMES = 5
 # Gemini reported and still count as the same object. Beyond this the two
 # perception layers simply disagree about what is in the frame.
 GEMINI_POINT_MAX_DIST = 0.25
+# How much bigger or smaller than the crop Gemini approved a detection may be
+# and still count as the same object at hand-off. Generous, because the drone
+# closes distance during centring and apparent area grows as 1/d^2 -- but the
+# case this exists to reject was off by a factor of 165, so generous is enough.
+GEMINI_AREA_RATIO_MAX = 6.0
 # The sweep usually catches the target at the edge of the frame -- the one
 # confirmed in flight sat at (0.11, 0.93), a corner. Handing that straight to
 # tracking meant driving forward while barely holding it in view, and it was
@@ -187,6 +204,40 @@ TAKEOFF_RAMP_SECONDS = 2.0
 ALT_TOLERANCE = 0.3         # m
 
 GCS_HEARTBEAT_PORT = 18570   # PX4's "Normal" mavlink instance (see docstring)
+
+
+def return_to_area_twist(x: float, y: float, yaw: float) -> Twist:
+    """Fly straight back to the middle of the search area.
+
+    Deliberately not a waypoint: whatever let the drone leave in the first
+    place is still in play, so this aims at the one point furthest from every
+    edge and translates only once pointed at it, exactly like the sweep does.
+    """
+    cx = 0.5 * (SEARCH_AREA_X[0] + SEARCH_AREA_X[1])
+    cy = 0.5 * (SEARCH_AREA_Y[0] + SEARCH_AREA_Y[1])
+    err = math.atan2(math.sin(math.atan2(cy - y, cx - x) - yaw),
+                     math.cos(math.atan2(cy - y, cx - x) - yaw))
+    t = Twist()
+    t.angular.z = max(-AVOID_ANGULAR, min(AVOID_ANGULAR, 1.5 * err))
+    t.linear.x = EXPLORE_LINEAR if abs(err) < 0.6 else 0.0
+    return t
+
+
+def vlm_failure_message(msg: str) -> str:
+    """What to tell the user when the vision model stops answering.
+
+    The raw text is an English API payload and used to be spoken verbatim, so
+    a 404 body was read aloud as the drone's reply. It carries a real
+    distinction worth keeping, though: whether waiting would help.
+    """
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return ("Görüş servisinin günlük kullanım hakkı doldu, şu anda "
+                "göremiyorum. Aramayı durduruyorum, yarın tekrar deneyebiliriz.")
+    if "404" in msg or "NOT_FOUND" in msg:
+        return ("Görüş modeline erişemiyorum, ayarlarda güncellenmesi gerekiyor. "
+                "Aramayı durduruyorum.")
+    return ("Görüş servisine şu anda ulaşamıyorum, bu yüzden göremiyorum. "
+            "Aramayı durduruyorum, birazdan tekrar deneyebilirsiniz.")
 
 
 def ref_path_for(target):
@@ -296,6 +347,27 @@ class SearchPattern:
 
     def current_waypoint(self):
         return self._waypoints[self._idx]
+
+    def sweep_seconds(self) -> float:
+        """Lower bound on one full pass: every leg flown, every corner turned,
+        nothing in the way.
+
+        Exists because the give-up timeout has to be derived from the pattern
+        rather than picked. A fixed 180 s was tried and is shorter than this
+        floor (198 s for the current area), so the search was cut off before it
+        could finish even one clean sweep and reported "not found" for ground
+        it had never flown over.
+        """
+        pts = self._waypoints
+        travel = sum(math.hypot(pts[i + 1][0] - pts[i][0],
+                                pts[i + 1][1] - pts[i][1])
+                     for i in range(len(pts) - 1))
+        turned = 0.0
+        for i in range(1, len(pts) - 1):
+            a = math.atan2(pts[i][1] - pts[i - 1][1], pts[i][0] - pts[i - 1][0])
+            b = math.atan2(pts[i + 1][1] - pts[i][1], pts[i + 1][0] - pts[i][0])
+            turned += abs(math.atan2(math.sin(b - a), math.cos(b - a)))
+        return travel / EXPLORE_LINEAR + turned / AVOID_ANGULAR
 
     def _advance(self):
         self._idx = (self._idx + 1) % len(self._waypoints)
@@ -837,6 +909,7 @@ def main():
     announced_arrival = False
     arrived_frames = 0
     gemini_point = None
+    gemini_area = 0.0
     center_point = None
     center_deadline = 0.0
     dialogue = Dialogue(speak, log_event)
@@ -846,6 +919,9 @@ def main():
     target_last = None
     found_context = ""
     last_report = ""
+    vlm_errors = 0
+    pose_log_after = 0.0
+    stray_report_after = 0.0
     locked_track_id = None
     locked_point = (0.5, 0.5)
     wanderer = SearchPattern()
@@ -854,6 +930,10 @@ def main():
     last_vlm_check_time = 0
     VLM_CHECK_INTERVAL = 15.0
     RATE_LIMIT_BACKOFF = 30.0
+    # Consecutive API failures tolerated before the search is abandoned and the
+    # user is told the drone cannot see. Above one, so a single network blip
+    # does not end a flight; low enough that minutes are not spent flying blind.
+    VLM_ERROR_LIMIT = 3
 
     cmd_queue = queue.Queue()
     threading.Thread(target=get_console_input, args=(cmd_queue,), daemon=True).start()
@@ -865,38 +945,67 @@ def main():
             # No spin_once here any more -- a background thread owns spinning,
             # so callbacks keep arriving even while this loop is blocked.
 
-            if current_phase == PHASE_SEARCH:
-                # Command intake comes *before* the frame check. With no camera
-                # publisher on /camera/image_raw the loop used to `continue`
-                # here forever and never reach this block, so typed commands
-                # piled up in the queue unread and the prompt just kept
-                # re-appearing as if the input had been ignored.
-                try:
-                    act = dialogue.submit(cmd_queue.get_nowait())
-                    if act['action'] == 'quit':
-                        break
-                    if act['action'] == 'start':
-                        target = act['target']
-                        dialogue.start_search(target)
-                        # Arm YOLO now, not at the hand-off to tracking: it is
-                        # the screening layer during the search from here on.
-                        detector.set_target(target)
-                        last_vlm_check_time = 0
-                    elif act['action'] == 'cancel':
-                        target = None
-                        node.set_target_altitude(HOVER_ALTITUDE)
-                    elif act['action'] == 'followup':
-                        # Answered from the frame kept at the moment of the
-                        # result -- the user is asking about what the drone
-                        # already saw, not asking it to go and look again.
-                        node.set_desired_twist(
-                            hold_altitude_twist(node.current_altitude()))
-                        reply = answer_followup(last_answer_frame, act['question'],
-                                                dialogue.context(), ref_path_for(target_last))
-                        dialogue.say(reply)
-                except queue.Empty:
-                    pass
+            # Command intake runs in every phase, before the phase dispatch.
+            #
+            # It used to live inside the SEARCH branch, so from the moment a
+            # target was confirmed until tracking ended the queue was never
+            # read: typed commands piled up unanswered and the prompt just
+            # kept re-appearing. That leaves the user unable to correct a
+            # wrong target, ask about the answer, or call the drone off while
+            # it flies at something -- which is precisely when being able to
+            # interrupt matters most.
+            #
+            # (The same block was moved above the camera-frame check earlier,
+            # for the same reason: a `continue` upstream of the queue read is
+            # indistinguishable, to the user, from being ignored.)
+            try:
+                act = dialogue.submit(cmd_queue.get_nowait())
+                if act['action'] == 'quit':
+                    break
+                if act['action'] == 'start':
+                    target = act['target']
+                    # Give up only after a full sweep has actually been
+                    # flown, plus room for the things the estimate leaves
+                    # out: avoidance turns, climbs over the wall, and the
+                    # station-keeping during each VLM call.
+                    dialogue.start_search(
+                        target,
+                        timeout=wanderer.sweep_seconds() * SEARCH_TIMEOUT_MARGIN)
+                    # Arm YOLO now, not at the hand-off to tracking: it is
+                    # the screening layer during the search from here on.
+                    detector.set_target(target)
+                    last_vlm_check_time = 0
+                    # A new target supersedes whatever is being chased, so the
+                    # old lock has to go with it -- otherwise the drone keeps
+                    # flying at the previous object under a new name.
+                    current_phase = PHASE_SEARCH
+                    locked_track_id = None
+                    gemini_point = None
+                    gemini_area = 0.0
+                    vlm_errors = 0
+                    node.set_target_altitude(HOVER_ALTITUDE)
+                elif act['action'] == 'cancel':
+                    target = None
+                    current_phase = PHASE_SEARCH
+                    locked_track_id = None
+                    gemini_point = None
+                    gemini_area = 0.0
+                    node.set_target_altitude(HOVER_ALTITUDE)
+                    node.set_desired_twist(
+                        hold_altitude_twist(node.current_altitude()))
+                elif act['action'] == 'followup':
+                    # Answered from the frame kept at the moment of the
+                    # result -- the user is asking about what the drone
+                    # already saw, not asking it to go and look again.
+                    node.set_desired_twist(
+                        hold_altitude_twist(node.current_altitude()))
+                    reply = answer_followup(last_answer_frame, act['question'],
+                                            dialogue.context(), ref_path_for(target_last))
+                    dialogue.say(reply)
+            except queue.Empty:
+                pass
 
+            if current_phase == PHASE_SEARCH:
                 # A search that never ends is not an answer anyone can act on.
                 if dialogue.search_expired():
                     dialogue.give_up()
@@ -937,6 +1046,34 @@ def main():
                     continue
 
                 sx, sy, syaw = node.horizontal_pose()
+
+                # The pursuit leash covered only PHASE_TRACK, so nothing bounded
+                # the sweep itself: a run ended with the drone at (18.9, -12.5),
+                # nineteen metres outside an area 6.5 m across, and the excursion
+                # was only noticed once tracking began. Recovery did eventually
+                # happen -- the waypoints are all inside the area, so the
+                # controller does aim back -- but slowly, and blind to the fact
+                # that it was searching ground nobody asked about.
+                strayed = (sx < SEARCH_AREA_X[0] - TRACK_LEASH_MARGIN
+                           or sx > SEARCH_AREA_X[1] + TRACK_LEASH_MARGIN
+                           or sy < SEARCH_AREA_Y[0] - TRACK_LEASH_MARGIN
+                           or sy > SEARCH_AREA_Y[1] + TRACK_LEASH_MARGIN)
+                if strayed:
+                    if time.time() > stray_report_after:
+                        log_event(f"Arama alani disinda ({sx:.1f}, {sy:.1f}) -- "
+                                  f"geri donuluyor.")
+                        stray_report_after = time.time() + STRAY_REPORT_INTERVAL
+                    node.set_desired_twist(return_to_area_twist(sx, sy, syaw))
+                    node.set_target_altitude(HOVER_ALTITUDE)
+                    time.sleep(0.03)
+                    continue
+
+                if time.time() > pose_log_after:
+                    log_event(f"Arama konumu ({sx:.1f}, {sy:.1f}) yaw={syaw:.2f} "
+                              f"irtifa={node.current_altitude():.1f} "
+                              f"hedef_wp={wanderer.current_waypoint()}")
+                    pose_log_after = time.time() + POSE_LOG_INTERVAL
+
                 node.set_desired_twist(
                     wanderer.twist(node.obstacle_ahead(), node.current_altitude(), sx, sy, syaw))
 
@@ -995,15 +1132,42 @@ def main():
                     # the answer could not be matched to a detection at all.
                     result = select_candidate(frame, search_candidates, target,
                                               reference_img_path=ref_path)
-                    log_event(f"Gemini Cevabı: {result['message']}")
+                    msg = result['message']
+                    log_event(f"Gemini Cevabı: {msg}")
 
-                    rate_limited = "429" in result['message'] or "RESOURCE_EXHAUSTED" in result['message']
+                    # An API failure is not a verdict. Counted as "not this one"
+                    # the drone keeps sweeping ground it cannot actually see and
+                    # ends up reporting the target missing -- measured across a
+                    # whole run where every call returned 404 because the model
+                    # had been retired, and the user was told nothing.
+                    api_error = "API Hatası" in msg
+                    rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
                     if rate_limited:
                         print(f"\n[!] Gemini kotası doldu, {RATE_LIMIT_BACKOFF:.0f}s bekleniyor...")
                         last_vlm_check_time = current_time + RATE_LIMIT_BACKOFF - VLM_CHECK_INTERVAL
                     else:
-                        speak(result['message'])
                         last_vlm_check_time = current_time
+
+                    if api_error:
+                        vlm_errors += 1
+                        # One failure is a hiccup and is worth retrying: the
+                        # successful run's first call died on a DNS error and
+                        # its second found the box.
+                        if vlm_errors >= VLM_ERROR_LIMIT:
+                            dialogue.abort(vlm_failure_message(msg))
+                            target = None
+                            vlm_errors = 0
+                            node.set_target_altitude(HOVER_ALTITUDE)
+                            node.set_desired_twist(
+                                hold_altitude_twist(node.current_altitude()))
+                            continue
+                    else:
+                        # A [NONE] is a real answer and needs no announcement;
+                        # the search narration already tells the user what is
+                        # happening. Speaking the model's own words here read
+                        # its English justification, and its errors, aloud.
+                        vlm_errors = 0
 
                     if result['found']:
                         chosen = search_candidates[result['index']]
@@ -1020,6 +1184,11 @@ def main():
                         # downstream is checking continuity of a real detection
                         # instead of trusting a described position.
                         gemini_point = chosen.normalized_center
+                        # Size of what was approved, kept for the hand-off. The
+                        # centre alone cannot tell the box from the wall behind
+                        # it, since a detection covering most of the frame is
+                        # near every point in it.
+                        gemini_area = chosen.relative_area
                         log_event(
                             f"Gemini kirpma #{result['index'] + 1} sec ti: "
                             f"merkez={gemini_point[0]:.2f},{gemini_point[1]:.2f} "
@@ -1045,6 +1214,17 @@ def main():
                     continue
 
                 cands = filter_candidates(detector.detect(frame))
+                detected_count = len(cands)
+                # Same size gate as the hand-off, and it matters more here:
+                # `nearest` is what the spoken answer's position is computed
+                # from, so letting the wall win means reporting the wall's
+                # distance as the object's, which the user has no way to doubt.
+                cands = [c for c in cands
+                         if gemini_area <= 0
+                         or (1.0 / GEMINI_AREA_RATIO_MAX
+                             <= c.relative_area / gemini_area
+                             <= GEMINI_AREA_RATIO_MAX)]
+                size_rejected = detected_count - len(cands)
                 cx_t, cy_t = center_point
                 nearest = min(cands,
                               key=lambda c: (c.normalized_center[0] - cx_t) ** 2
@@ -1064,7 +1244,20 @@ def main():
                     # Lost it while turning; nothing to centre on.
                     node.set_desired_twist(hold_altitude_twist(node.current_altitude()))
                     if time.time() > center_deadline:
-                        msg = "Ortalama basarisiz -- hedef kayboldu, aramaya donuluyor."
+                        # Three different failures used to share one message,
+                        # which made it impossible to tell a target that drifted
+                        # out of view from one the size gate was rejecting --
+                        # the second means the gate is doing its job.
+                        if detected_count == 0:
+                            why = "hicbir sey algilanmadi"
+                        elif size_rejected and not cands:
+                            why = (f"{size_rejected} aday boyut disi "
+                                   f"(onaylanan alan={gemini_area:.4f})")
+                        elif gap is not None:
+                            why = f"en yakin aday {gap:.2f} uzakta"
+                        else:
+                            why = "uygun aday yok"
+                        msg = f"Ortalama basarisiz -- {why}, aramaya donuluyor."
                         log_event(msg)
                         print(f"\n[?] {msg}")
                         node.set_target_altitude(HOVER_ALTITUDE)
@@ -1166,8 +1359,33 @@ def main():
                         # track id so later frames keep following the same
                         # thing.
                         gx, gy = gemini_point
+                        # Only detections of roughly the approved size are
+                        # eligible. Proximity alone picked a detection covering
+                        # 66% of the frame to stand in for a crop covering 0.4%
+                        # -- 165 times larger, the wall rather than the box --
+                        # and the drone then chased it 4 m out of the search
+                        # area. Nothing about a centre distance can catch that,
+                        # because a detection that large is near every point.
+                        plausible = [
+                            c for c in tracked_candidates
+                            if gemini_area <= 0
+                            or (1.0 / GEMINI_AREA_RATIO_MAX
+                                <= c.relative_area / gemini_area
+                                <= GEMINI_AREA_RATIO_MAX)]
+                        if not plausible:
+                            msg = (f"Takip iptal: onaylanan nesne alan={gemini_area:.4f}, "
+                                   f"benzer boyutta aday yok "
+                                   f"(en yakin {min((abs(c.relative_area - gemini_area), c.relative_area) for c in tracked_candidates)[1]:.4f}).")
+                            log_event(msg)
+                            print(f"\n[?] {msg}")
+                            gemini_point = None
+                            current_phase = PHASE_SEARCH
+                            node.set_target_altitude(HOVER_ALTITUDE)
+                            node.set_desired_twist(
+                                hold_altitude_twist(node.current_altitude()))
+                            continue
                         best_candidate = min(
-                            tracked_candidates,
+                            plausible,
                             key=lambda c: (c.normalized_center[0] - gx) ** 2
                                           + (c.normalized_center[1] - gy) ** 2)
                         gap = math.hypot(best_candidate.normalized_center[0] - gx,
