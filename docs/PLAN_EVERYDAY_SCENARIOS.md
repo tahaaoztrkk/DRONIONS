@@ -126,16 +126,40 @@ do the geometry.
 Expected output: *"Your keys are about two metres ahead and slightly to your
 right, on the table, next to a blue mug."*
 
-### 3.3 Interaction loop, following their proven design
+### 3.3 Interaction loop, following their proven design — **built and verified**
 
-- tactile trigger (a key press stands in for the Flic button)
-- transcribe → **confirm back to the user** → execute
-- **narrate progress** while flying ("I'm looking at the table now")
-- multi-turn memory so follow-ups work ("is there any text on it?")
-- concise speech; never a wall of audio
-- an explicit, bounded **"I could not find it"**
+Implemented in `assistant/dialogue.py`, wired into the PX4 node. Every path
+below has fired in flight, not only in unit tests:
 
-Today's system says `arrived` and hovers — which tells a blind user nothing.
+| Their finding | What it became | Verified |
+|---|---|---|
+| confirm before acting | `Onaylayın: box aramamı istiyorsunuz` | yes |
+| — | correction attached to the rejection (`no,phone`) | yes |
+| narrate progress | rate-limited; repeats held to 30 s, new information to 8 s | yes |
+| multi-turn follow-ups | answered from the frame kept at the moment of the result | yes |
+| concise speech | replies capped at two short sentences | yes |
+| bounded "I could not find it" | deadline derived from the sweep's own lap time | fired at 317 s |
+| *(theirs did not need this)* | "I cannot see" as a **distinct** answer from "it is not there" | fired on quota exhaustion |
+
+Two design decisions worth carrying into the write-up.
+
+**The give-up deadline is computed, not chosen.** A fixed 180 s was shorter
+than one lap of the search area, so the drone reported ground empty that it had
+never flown over — an assistive system asserting a negative it had not earned.
+`SearchPattern.sweep_seconds()` predicted 198 s for a lap; the logged position
+trace completed one in 195 s, and the deadline is that estimate × 1.6.
+
+**A dead sensor is not a negative result.** Their drone flew a fixed waypoint
+list under supervision; ours searches autonomously, so an API failure counted as
+"not this one" produces minutes of confident searching by a system that cannot
+see, ending in "not found". A run was lost exactly this way to a retired-model
+404. Three consecutive failures now stop the search and name the cause — quota,
+unreachable model, or network — because the user has no independent way to tell
+a blind drone from an empty room.
+
+Both are consequences of autonomy that their supervised, waypoint-based design
+never had to answer for. They are the clearest thing this work adds to the
+interaction findings rather than merely reproducing.
 
 ---
 
@@ -325,11 +349,30 @@ Settle it on **one textured table** before building the room. The harness exists
 
 ## 8. Still open from the simulation work
 
-- **Repeatability** — the end-to-end success is a single run. Script N headless
-  runs; each costs Gemini quota, so exercise the non-Gemini parts (search
-  coverage, obstacle clearing, climb-over) unlimited and reserve quota for
-  identification.
-- **The tracking leash** (`TRACK_LEASH_MARGIN`) has never fired. Force it by
-  shrinking the margin and confirming the pursuit is abandoned.
-- Gemini free tier is **20 requests/day per project per model** — a new API key
-  in the same project does not reset it; `GEMINI_MODEL` switching does.
+- **Repeatability** — better than it was: several end-to-end successes, fastest
+  43 s from command to answer. But the two failures on record were both the
+  Gemini API rather than the search (a retired-model 404, and daily quota), so
+  the *system's* reliability and the *search's* reliability are still
+  confounded. Script N headless runs, exercising the non-Gemini parts (search
+  coverage, obstacle clearing, climb-over) without limit and reserving quota
+  for identification.
+- **One unexplained excursion.** A run put the drone at (18.9, −12.5) —
+  nineteen metres outside an area 6.5 m across — and it recovered on its own.
+  There was no position trace to diagnose it from. The sweep now logs its
+  position every 10 s and turns back at the boundary, so a recurrence will
+  leave evidence; until it recurs, the cause is unknown. Candidates worth
+  checking first: a yaw-sign disagreement between MAVROS pose and the waypoint
+  controller, or EKF disturbance around the `TM: Time jump detected` warnings
+  MAVROS emits under simulation-time changes.
+- **Gemini quota shapes what can be tested in a day.** 20 requests/day per
+  project *per model*; a new key in the same project does not reset it, but
+  switching `GEMINI_MODEL` does. A 429 is not always the daily cap — there is a
+  per-minute limit that recovers within seconds, which is why only *consecutive*
+  failures are treated as fatal.
+- **Indoor scenarios remain blocked** by `OBSTACLE_SAFE_DISTANCE = 1.0` m
+  against ~0.8 m doorways — the single largest obstacle to §4's scenario set.
+- **Untextured primitives are invisible to YOLO-World** (§6, Small objects), so
+  the realistic indoor scene needs textured assets before any "can it find keys"
+  result means anything. The node now logs each target's prompt expansion and
+  warns when there is none, which is the cheapest way to find out which objects
+  still need entries in `PROMPT_DATABASE`.
