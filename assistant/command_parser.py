@@ -146,6 +146,18 @@ def _normalize_tr(phrase: str) -> str:
     return " ".join(rest + [stems[0] if stems else words[-1]])
 
 
+def normalize_target(text: str) -> str:
+    """Map a bare object phrase to something the detector can use.
+
+    parse_command needs a verb to recognise a command, so a user answering
+    "hayır, telefon" -- no verb, just the thing they want -- got the raw word
+    through unchanged, missing the lexicon and with it the whole prompt
+    expansion. Same failure as an unparsed Turkish command, reached by a
+    different route.
+    """
+    return _normalize_tr((text or "").lower().strip().rstrip("?.!"))
+
+
 def parse_command(command: str) -> dict:
     """Extracts intent and target from a spoken or typed command."""
     text = (command or "").lower().strip().rstrip("?.!")

@@ -29,9 +29,10 @@ would otherwise search forever.
 """
 from __future__ import annotations
 
+import re
 import time
 
-from assistant.command_parser import parse_command
+from assistant.command_parser import normalize_target, parse_command
 
 # Minimum gap between spoken progress updates. Narration is meant to give the
 # user a sense of orientation, not to fill the audio channel they need for
@@ -46,14 +47,19 @@ NARRATION_MIN_GAP = 8.0     # seconds
 # that the search is still running is worth the interruption.
 NARRATION_REPEAT_GAP = 30.0     # seconds
 
-# How long to search before admitting failure.
-SEARCH_TIMEOUT = 180.0      # seconds
+# How long to search before admitting failure, when the caller does not say.
+# A caller that knows its own coverage pattern should pass a timeout derived
+# from it instead: this default is a guess, and a guess shorter than one sweep
+# turns "I have not looked there yet" into "it is not there".
+SEARCH_TIMEOUT = 300.0      # seconds
 
 _YES = {'e', 'evet', 'y', 'yes', 'ok', 'tamam', 'onay', 'onaylıyorum', ''}
 _NO = {'h', 'hayır', 'hayir', 'n', 'no', 'iptal', 'vazgeç', 'vazgec'}
 # A rejection often arrives attached to the correction -- "hayır, plant bul".
-# Matching only the bare word made that whole sentence the new target.
-_NO_PREFIX = ('hayır', 'hayir', 'yok ', 'no ', 'not ')
+# Matched as a word with any punctuation after it, because people type
+# "no,phone" as readily as "no phone": a literal "no " prefix missed the
+# comma form and sent the drone looking for an object called "no,phone".
+_NO_PREFIX_RE = re.compile(r'^(hayır|hayir|yok|no|not)\b[\s,;.]*', re.I)
 _QUIT = {'q', 'çıkış', 'cikis', 'quit', 'exit'}
 
 # Follow-up detection. The reference system routed intent through the LLM; that
@@ -89,6 +95,7 @@ class Dialogue:
         self.history = []               # (role, text) for follow-up context
         self.have_answer = False        # a result has been delivered
         self._search_started = None
+        self._timeout = SEARCH_TIMEOUT
         self._last_narration = 0.0
         self._last_narration_text = None
 
@@ -119,8 +126,9 @@ class Dialogue:
 
     # ---------------- search lifecycle ----------------
 
-    def start_search(self, target):
+    def start_search(self, target, timeout=None):
         self.target = target
+        self._timeout = timeout or SEARCH_TIMEOUT
         self.pending_target = None
         self.have_answer = False
         self._search_started = time.time()
@@ -130,7 +138,7 @@ class Dialogue:
 
     def search_expired(self):
         return (self.target is not None and self._search_started is not None
-                and time.time() - self._search_started > SEARCH_TIMEOUT)
+                and time.time() - self._search_started > self._timeout)
 
     def give_up(self):
         """An explicit, bounded failure. Silence or an endless hunt is not an
@@ -140,8 +148,26 @@ class Dialogue:
         self.pending_target = None
         self._search_started = None
         self.have_answer = True
-        self.say(f"{t} bulunamadı. Aramayı durduruyorum. "
+        self.say(f"{t} bulunamadı. Aradığım alanı tamamen taradım. "
                  f"Başka bir yerde deneyebilir veya farklı bir şey sorabilirsiniz.")
+
+    def abort(self, reason):
+        """Stop the search for a reason that is not "it is not there".
+
+        Kept separate from give_up() because the two are different answers and
+        a user who cannot look has no other way to tell them apart. A run was
+        observed where every vision call failed with a retired-model 404 and
+        the drone went on sweeping in silence: it could not see at all, but was
+        on course to report the object missing.
+
+        have_answer stays False -- there is no result here to ask questions
+        about.
+        """
+        self.target = None
+        self.pending_target = None
+        self._search_started = None
+        self.have_answer = False
+        self.say(reason)
 
     def record_answer(self, text):
         self.target = None
@@ -164,17 +190,25 @@ class Dialogue:
         if low in _QUIT:
             return {"action": "quit"}
 
+        # "hayır, telefon" is a rejection and a correction in one breath, and
+        # it arrives in both states: while a target awaits confirmation, and
+        # just after an answer the user disagrees with. Handled before anything
+        # else, because with nothing pending it fell through to the parser,
+        # which found no verb and made the whole utterance the target -- the
+        # drone was then sent looking for "hayır, telefon".
+        m = _NO_PREFIX_RE.match(raw)
+        if m:
+            rest = raw[m.end():].strip(' ,')
+            cancelled, self.pending_target = self.pending_target, None
+            if rest:
+                return self._propose(rest)
+            self.say(f"{cancelled} araması iptal edildi. Ne aramamı istersiniz?"
+                     if cancelled else
+                     "Tamam, iptal ettim. Ne aramamı istersiniz?")
+            return {"action": "cancel"}
+
         # Awaiting a yes/no on a proposed target.
         if self.pending_target is not None:
-            # "hayır, X bul" is a rejection *and* a correction in one breath.
-            for pre in _NO_PREFIX:
-                if low.startswith(pre):
-                    rest = raw[len(pre):].strip(' ,')
-                    self.pending_target = None
-                    if rest:
-                        return self._propose(rest)
-                    self.say("Tamam, iptal ettim. Ne aramamı istersiniz?")
-                    return {"action": "cancel"}
             if low in _NO:
                 cancelled, self.pending_target = self.pending_target, None
                 self.say(f"{cancelled} araması iptal edildi. Ne aramamı istersiniz?")
@@ -193,6 +227,14 @@ class Dialogue:
         if not raw:
             return {"action": "ignored"}
 
+        # A bare "iptal" with nothing pending means stop what you are doing.
+        # Without this it was parsed as a command and became the target.
+        if low in _NO:
+            self.target = None
+            self._search_started = None
+            self.say("Tamam, durduruyorum. Ne aramamı istersiniz?")
+            return {"action": "cancel"}
+
         # With an answer already given, a question is about that answer.
         if self.have_answer and self._looks_like_question(low):
             self.history.append(("user", raw))
@@ -201,7 +243,9 @@ class Dialogue:
         return self._propose(raw)
 
     def _propose(self, raw):
-        target = parse_command(raw).get("target") or raw
+        # Fall back to the lexicon, not to the raw string: an utterance with no
+        # verb is still usually just the object's name.
+        target = parse_command(raw).get("target") or normalize_target(raw) or raw
         self.pending_target = target
         self.history.append(("user", raw))
         self.say(f"Onaylayın: {target} aramamı istiyorsunuz. "
