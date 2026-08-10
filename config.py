@@ -18,7 +18,13 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # API key inside the same Google Cloud project does not reset it -- but each
 # model has its own separate daily allowance. Switching this is the quickest
 # way to keep testing once one model is exhausted.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+#
+# Moved off gemini-2.5-flash: it has entered retirement and answers a freshly
+# issued API key with 404 "no longer available to new users". A whole test
+# flight was lost to that, every vision call failing while the drone went on
+# searching. Existing keys still reach it, so pin GEMINI_MODEL=gemini-2.5-flash
+# in .env to reproduce the measurements in docs/, which were taken with it.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 VOICE_ENABLED = False
 
 # --- User pose, for describing where things are ---
