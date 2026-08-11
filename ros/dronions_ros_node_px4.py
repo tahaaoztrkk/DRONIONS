@@ -759,16 +759,33 @@ def startup_sequence(node: DronionsRosNodePX4):
     # mav_frame=BODY_NED so linear.x/angular.z mean "forward/yaw relative to
     # the drone's own heading" -- MAVROS defaults this to LOCAL_NED (world
     # frame), which would make the navigator's steering meaningless.
+    # The result is checked, and the flight refused if it did not stick. This
+    # was set and then ignored, which is the same silent-failure shape as the
+    # safety-parameter race that caused takeoff-then-land: nothing in the log
+    # distinguished "frame set" from "frame quietly rejected", and under
+    # LOCAL_NED every steering command means a compass direction instead of
+    # "forward". Refusing to fly is the safe end of that.
     frame_client = node.create_client(SetParameters, '/mavros/setpoint_velocity/set_parameters')
-    if frame_client.wait_for_service(timeout_sec=5.0):
-        req = SetParameters.Request()
-        p = ParameterMsg()
-        p.name = 'mav_frame'
-        p.value.type = 4  # PARAMETER_STRING
-        p.value.string_value = 'BODY_NED'
-        req.parameters = [p]
-        future = frame_client.call_async(req)
-        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+    if not frame_client.wait_for_service(timeout_sec=10.0):
+        raise RuntimeError(
+            "MAVROS setpoint_velocity parametre servisi yok -- mav_frame "
+            "ayarlanamaz, BODY_NED olmadan yon komutlari anlamsiz.")
+    req = SetParameters.Request()
+    p = ParameterMsg()
+    p.name = 'mav_frame'
+    p.value.type = 4  # PARAMETER_STRING
+    p.value.string_value = 'BODY_NED'
+    req.parameters = [p]
+    future = frame_client.call_async(req)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+    res = future.result()
+    ok = bool(res and res.results and res.results[0].successful)
+    if not ok:
+        reason = (res.results[0].reason if res and res.results else "cevap yok")
+        raise RuntimeError(
+            f"mav_frame=BODY_NED ayarlanamadi ({reason}). LOCAL_NED altinda "
+            f"'ileri' komutu kuzeye gitmek demek -- ucus reddediliyor.")
+    log_event("PX4: setpoint cercevesi BODY_NED olarak ayarlandi.")
 
     # Wait for the estimator, not just the link. Starting the node seconds
     # after PX4 (rather than a couple of minutes later) otherwise arms on an
@@ -1354,7 +1371,11 @@ def main():
                         # Gemini's sentence is the one thing geometry cannot
                         # supply -- what the object looks like and what it sits
                         # next to. Kept to append to the spoken location.
-                        found_context = result['message'].split(']', 1)[-1].strip()
+                        # From the model's own split of its reply, not from
+                        # slicing the raw text: it now returns a machine token,
+                        # an English justification and the Turkish sentence, and
+                        # only the last of those is spoken.
+                        found_context = result.get('context') or ''
                         current_phase = PHASE_CENTER
                     elif not rate_limited and not result['found']:
                         print(f"\n[?] '{target}' bulunamadı. Aramaya devam ediliyor...")

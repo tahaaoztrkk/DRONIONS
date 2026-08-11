@@ -105,6 +105,27 @@ CROP_PADDING_PX = 12
 CROP_MIN_SIDE_PX = 160
 
 
+_MATCH_TOKEN = re.compile(r'\[(MATCH\s*:\s*\d+|NONE)\]', re.I)
+
+
+def _spoken_context(text: str) -> str:
+    """The part of the reply meant for the user, and only that.
+
+    The model is asked for a machine token, an English justification and a
+    Turkish sentence, in that order. Only the last is read aloud; the answer
+    used to be assembled by splitting on the first ']' and keeping the rest,
+    which would now speak the justification too. That is the same mistake as
+    reading raw API text aloud, arrived at from the other direction.
+    """
+    out = []
+    for line in _MATCH_TOKEN.sub('', text or '').splitlines():
+        line = line.strip()
+        if not line or line.upper().startswith('BECAUSE'):
+            continue
+        out.append(line)
+    return ' '.join(out).strip()
+
+
 def select_candidate(frame: np.ndarray, candidates, target: str,
                      reference_img_path: str = None) -> dict:
     """Asks Gemini which of YOLO's detections is the target.
@@ -142,15 +163,30 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
     else:
         prompt.append("The images below are numbered crops from the current camera view.")
     prompt.append(
-        f"Exactly one of the crops may be my '{target}'. Ignore crops showing walls, "
-        f"floors, panels or other background surfaces, and ignore objects that are a "
-        f"different colour or shape from what I asked for. "
-        f"Reply with EXACTLY '[MATCH:n]' where n is the number of the crop showing my "
-        f"'{target}', or EXACTLY '[NONE]' if none of them is. "
+        # The base rate is stated because it is measured, and because without
+        # it the question degrades into a yes/no. Across 80 surveyed viewpoints
+        # the object was present in 14%, and the detector usually offers a
+        # single crop -- so the model is handed one picture and asked "is this
+        # it", which is exactly the shape that gets a reflexive yes. A run
+        # approved a bright blue distractor against a tan reference photo.
+        f"Most of the time the object is NOT in view: in this system roughly "
+        f"six out of seven of these requests contain no match at all, so "
+        f"'[NONE]' is the ordinary answer and choosing a crop is the exception. "
+        f"Do not pick the closest-looking crop. Pick one only if it clearly "
+        f"matches on colour, texture and markings; if it differs in any of "
+        f"those, it is a different object even when the shape is identical. "
+        f"Ignore walls, floors, panels and other background surfaces.\n"
+        f"Reply with EXACTLY '[MATCH:n]' where n is the number of the crop "
+        f"showing my '{target}', or EXACTLY '[NONE]'.\n"
+        f"If you answer [MATCH:n], first state in English which specific "
+        f"feature made you certain, in the form 'BECAUSE: <feature>'. Name a "
+        f"visible detail, not a category -- 'the taped seam down the middle' "
+        f"rather than 'it is a box'.\n"
         f"Then add ONE short sentence IN TURKISH describing what the object is "
         f"resting on or sitting next to, addressed to the user. "
         f"This sentence is read aloud to a blind person, so do not justify your "
-        f"choice, do not mention crops, images or numbers, and do not use English."
+        f"choice there, do not mention crops, images or numbers, and do not "
+        f"use English in it."
     )
     contents.append("\n".join(prompt))
 
@@ -184,10 +220,12 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
         if m:
             idx = int(m.group(1)) - 1
             if 0 <= idx < len(shortlist):
-                return {"found": True, "index": idx, "message": text}
+                return {"found": True, "index": idx, "message": text,
+                        "context": _spoken_context(text)}
             return {"found": False, "index": None,
                     "message": f"Gemini gecersiz kirpma numarasi verdi: {text}"}
-        return {"found": False, "index": None, "message": text}
+        return {"found": False, "index": None, "message": text,
+                "context": _spoken_context(text)}
     except Exception as e:
         return {"found": False, "index": None, "message": f"Gemini API Hatası: {e}"}
 
