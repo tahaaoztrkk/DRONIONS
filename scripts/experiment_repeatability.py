@@ -183,6 +183,14 @@ def one_run(idx, total, timeout, approach=False):
     if approach:
         env["DRONIONS_FAKE_VLM"] = "1"
         env.pop("DRONIONS_NO_VLM", None)
+        # Start each run at a different waypoint. Without this the sweep is
+        # deterministic and ten runs produced ten copies of one approach --
+        # every single one from (4.9, -2.5) to (4.0, 1.3), with the wall never
+        # between the drone and the target. The conditions the approach fixes
+        # exist for simply never arose, so "10/10 clean" said nothing about
+        # them. Cycling the start walks the target's first sighting around the
+        # area instead.
+        env["DRONIONS_SWEEP_START"] = str(idx - 1)
     else:
         env["DRONIONS_NO_VLM"] = "1"
         env.pop("DRONIONS_FAKE_VLM", None)

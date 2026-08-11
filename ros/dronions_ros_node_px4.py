@@ -100,6 +100,13 @@ SURVEY = os.getenv("DRONIONS_NO_VLM", "") not in ("", "0")
 # all happen on some runs and not others, so a single flight cannot show
 # whether a fix worked or the dice fell differently.
 FAKE_VLM = os.getenv("DRONIONS_FAKE_VLM", "") not in ("", "0")
+
+# Waypoint the sweep starts from. Only the campaign sets it; a normal flight
+# always starts at the first, so behaviour stays reproducible.
+try:
+    SWEEP_START = int(os.getenv("DRONIONS_SWEEP_START", "0"))
+except ValueError:
+    SWEEP_START = 0
 from assistant.command_parser import parse_command
 from assistant.agent import capture_and_analyze, select_candidate, answer_followup
 from assistant.dialogue import Dialogue
@@ -363,9 +370,15 @@ class SearchPattern:
     wall would stall the whole sweep.
     """
 
-    def __init__(self):
+    def __init__(self, start_index: int = 0):
         self._waypoints = self._build_lawnmower()
-        self._idx = 0
+        # Where in the loop the sweep begins. Deterministic by default; the
+        # campaign varies it because leaving it fixed made ten runs into ten
+        # copies of one. Every approach came from (4.9, -2.5) to (4.0, 1.3),
+        # so conditions that depend on geometry -- the wall lying between the
+        # drone and the target, above all -- never arose and the fixes for
+        # them were never actually exercised.
+        self._idx = start_index % len(self._waypoints) if self._waypoints else 0
         self._deadline = time.time() + WAYPOINT_TIMEOUT
         self._turn_until = 0.0
         self._turn_dir = 1.0
@@ -1025,7 +1038,7 @@ def main():
     stray_report_after = 0.0
     locked_track_id = None
     locked_point = (0.5, 0.5)
-    wanderer = SearchPattern()
+    wanderer = SearchPattern(SWEEP_START)
     frames_lost = 0
     MAX_FRAMES_LOST = 60
     last_vlm_check_time = 0
@@ -1474,6 +1487,28 @@ def main():
                 node.set_desired_twist(twist)
 
                 if abs(err_x) < CENTER_OK and abs(err_y) < CENTER_OK:
+                    # Check the size before saying anything. Measured: a run
+                    # centred on the wall, spoke "your box is 1.5 metres to
+                    # your left", and only then did the tracking re-check drop
+                    # it for being 4.2 m wide. The order was backwards -- a
+                    # blind user has no way to notice that the thing just
+                    # described is a wall, so the retraction comes too late to
+                    # help. Nothing is spoken until the object could be the
+                    # target at all.
+                    if target and not size_plausible(nearest, node.pose_xyz(),
+                                                     node.orientation(), target):
+                        iw = implied_width(nearest, node.pose_xyz(),
+                                           node.orientation())
+                        msg = (f"Ortalanan nesne reddedildi: {iw:.1f} m genisliginde, "
+                               f"'{target}' bu boyutta olamaz.")
+                        log_event(msg)
+                        print(f"\n[?] {msg}")
+                        node.set_target_altitude(HOVER_ALTITUDE)
+                        node.set_desired_twist(
+                            hold_altitude_twist(node.current_altitude()))
+                        current_phase = PHASE_SEARCH
+                        continue
+
                     log_event(f"Hedef ortalandi (x={center_point[0]:.2f} "
                               f"y={center_point[1]:.2f}) -- takibe geciliyor.")
 
