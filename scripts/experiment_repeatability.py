@@ -148,13 +148,49 @@ APPROACH_EVENTS = {
 }
 
 
+_LOCK = re.compile(r'Hedef konumu \(dunya\) x=(-?[\d.]+) y=(-?[\d.]+) '
+                   r'\| drone x=(-?[\d.]+) y=(-?[\d.]+)')
+
+
+def _wall_gap(drone, tgt):
+    """Closest the drone->target line passes to the wall, in metres.
+
+    Recorded per run because a campaign whose runs all fly the same line
+    measures nothing about geometry-dependent failures, and the first one did
+    exactly that without saying so: ten runs, ten identical approaches, the
+    wall never nearer than 2.1 m to any of them, and a clean sheet that looked
+    like the wall-strike fix working.
+    """
+    (px, py), (qx, qy) = drone, tgt
+    dx, dy = qx - px, qy - py
+    L = dx * dx + dy * dy
+    best = float('inf')
+    for i in range(41):
+        wy = WALL_Y_SPAN[0] + i * (WALL_Y_SPAN[1] - WALL_Y_SPAN[0]) / 40
+        t = 0.0 if L == 0 else max(0.0, min(1.0, ((WALL_X - px) * dx + (wy - py) * dy) / L))
+        best = min(best, ((px + t * dx - WALL_X) ** 2 + (py + t * dy - wy) ** 2) ** 0.5)
+    return best
+
+
 def parse_approach(lines, run_id):
     """One run's log -> a row of approach-phase outcomes."""
     row = {"run": run_id}
     for key, (needle, _) in APPROACH_EVENTS.items():
         row[key] = sum(1 for l in lines if needle in l)
-    handoffs = sum(1 for l in lines if "takibe geciliyor" in l)
-    row["handoffs"] = handoffs
+    row["handoffs"] = sum(1 for l in lines if "takibe geciliyor" in l)
+
+    row.update({"locked": "", "tgt_x": "", "tgt_y": "",
+                "drone_x": "", "drone_y": "", "wall_gap": ""})
+    for l in lines:
+        m = _LOCK.search(l)
+        if m:
+            tx, ty, dx, dy = (float(m.group(i)) for i in (1, 2, 3, 4))
+            name, _, _ = nearest_object(tx, ty)
+            row.update({"locked": name,
+                        "tgt_x": f"{tx:.2f}", "tgt_y": f"{ty:.2f}",
+                        "drone_x": f"{dx:.2f}", "drone_y": f"{dy:.2f}",
+                        "wall_gap": f"{_wall_gap((dx, dy), (tx, ty)):.2f}"})
+            break
     return row
 
 
@@ -171,10 +207,38 @@ def report_approach(rows):
     for key, (_, label) in APPROACH_EVENTS.items():
         if key == "arrived":
             continue
-        total = sum(r[key] for r in rows)
-        runs_hit = sum(1 for r in rows if r[key])
+        total = sum(int(r[key]) for r in rows)
+        runs_hit = sum(1 for r in rows if int(r[key]))
         flag = "  <-- " if key in ("contact",) and total else ""
         print(f"  {label:28}: {total:3} olay, {runs_hit}/{n} kosu{flag}")
+
+    # Without this the outcomes above cannot be read: a clean sheet means
+    # "the fixes held" only if the runs differed enough to test them.
+    geo = [r for r in rows if r.get("wall_gap")]
+    print(f"\n  --- yaklasma cesitliligi ---")
+    if not geo:
+        print("    kilit kaydi yok")
+        return
+    gaps = sorted(float(r["wall_gap"]) for r in geo)
+    blocked = sum(1 for g in gaps if g < 0.5)
+    print(f"    duvar yol uzerinde   : {blocked}/{len(geo)} kosu "
+          f"(<0.5 m); acikliklar {gaps[0]:.1f} - {gaps[-1]:.1f} m")
+    print(f"    kilitlenilen nesne   : "
+          + ", ".join(f"{k} x{v}" for k, v in
+                      Counter(r["locked"] for r in geo).most_common()))
+    # Clustering, not spread. Max pairwise distance is dominated by a single
+    # outlier -- it read 9.5 m for a campaign in which nine of ten runs flew
+    # from the same spot, which is exactly the case this is meant to catch.
+    pts = [(float(r["drone_x"]), float(r["drone_y"])) for r in geo]
+    med = (statistics.median(p[0] for p in pts), statistics.median(p[1] for p in pts))
+    near = sum(1 for p in pts
+               if ((p[0] - med[0]) ** 2 + (p[1] - med[1]) ** 2) ** 0.5 < 1.0)
+    print(f"    yaklasma noktalari   : {len(pts)} kosudan {near} tanesi ayni "
+          f"noktada (medyanin 1 m yakininda)")
+    if near >= max(2, int(0.7 * len(pts))):
+        print("    !! Kosular buyuk olcude ayni yerden yaklasmis. Geometriye "
+              "bagli hatalar (duvarin yolda olmasi gibi) sinanmamis demektir; "
+              "yukaridaki temiz sonuclar onlar hakkinda bilgi vermez.")
 
 
 def one_run(idx, total, timeout, approach=False):
@@ -301,7 +365,8 @@ def main():
         return
 
     if a.approach:
-        fields = ["run", "handoffs"] + list(APPROACH_EVENTS)
+        fields = (["run", "handoffs"] + list(APPROACH_EVENTS)
+                  + ["locked", "tgt_x", "tgt_y", "drone_x", "drone_y", "wall_gap"])
     else:
         fields = ["run", "t", "rank", "conf", "area", "world_x", "world_y",
                   "drone_x", "drone_y", "nearest", "box_err", "is_box"]
