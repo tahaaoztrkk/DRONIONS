@@ -1,30 +1,35 @@
 #!/usr/bin/env python3
 """
-Görevi: Aramayı N kez tekrarlayıp güvenilirliğini ölçer.
+Görevi: Aramayı VLM'siz koşturup dedektörün tek başına ne kadar yettiğini ölçer.
 
-Why this is separate from every other experiment here: the two end-to-end
-failures on record were both the Gemini API -- a retired model answering 404,
-and the daily quota running out -- and neither was a failure of the search. So
-"how reliable is the system" and "how reliable is the search" could not be told
-apart, and the free tier's 20 requests/day per model caps honest repetition at
-roughly one run a day.
+Why this exists: the two end-to-end failures on record were both the Gemini API
+-- a retired model answering 404, and the daily quota running out -- and neither
+was a failure of the search. "How reliable is the system" and "how reliable is
+the search" could not be told apart, and at 20 requests/day per model honest
+repetition was capped at roughly one run a day.
 
-Running with DRONIONS_NO_VLM=1 removes the API from the loop entirely: the node
-accepts YOLO's own best candidate, and the run costs nothing. What that buys is
-the search measured on its own -- how long the sweep takes to put the target in
-frame, and how often the detector alone locks the right object. The second
-number is interesting precisely because it is expected to be poor: it is the
-size of the job the VLM is doing, measured rather than asserted.
+DRONIONS_NO_VLM=1 puts the node in survey mode: it flies the whole sweep and
+logs what the detector ranked at every check, without ever handing off. A run
+costs nothing and yields a sample from every place the search actually looks.
 
-Scoring is against the scenario's known object positions. Every one of them is
-static, so there is no need to query Gazebo at all -- which matters, because
-`gz model -p` costs 5.1 s per call and starved frame capture badly enough in an
-earlier campaign that 65% of samples had no frame.
+The first design instead auto-accepted YOLO's best candidate, and measured
+almost nothing. The wall fills 68% of the frame from the takeoff spot, so every
+run ended one second into the search having locked onto it -- repeating that
+gives copies of one viewpoint, not a distribution. Hence: never hand off, and
+score every sample.
 
-  scripts/experiment_repeatability.py            # 20 runs, no VLM
-  scripts/experiment_repeatability.py -n 5
-  scripts/experiment_repeatability.py --with-vlm # spends quota; ~1 run/day
-  scripts/experiment_repeatability.py --report   # re-score an existing CSV
+What comes out is the size of the job the VLM stage is doing, measured across
+the sweep rather than asserted: how often the detector's top-ranked candidate
+is the real box, how often it is the wall, and how much of the time the box is
+detectable at all.
+
+Scoring is against the scenario's static object positions, so Gazebo is never
+queried -- `gz model -p` costs 5.1 s per call and starved frame capture badly
+enough in an earlier campaign that 65% of samples had no frame.
+
+  scripts/experiment_repeatability.py            # 5 runs, survey mode
+  scripts/experiment_repeatability.py -n 10
+  scripts/experiment_repeatability.py --report   # re-score the existing CSV
 """
 from __future__ import annotations
 
@@ -32,11 +37,10 @@ import argparse
 import csv
 import os
 import re
-import shutil
 import statistics
 import subprocess
-import sys
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -46,32 +50,26 @@ OUT_CSV = REPO / "logs" / "repeatability.csv"
 CHAIN = REPO / "scripts" / "run_sim_chain.sh"
 
 # Ground truth from Tools/simulation/gz/worlds/dronions_scenario.sdf. All static.
-# The wall is 4 m long, so scoring it as a point put estimates "1.1 m from the
-# wall" that were in fact 0.5 m from its face; it is measured to the nearest
-# point on its span instead.
 TRUTH = {
-    "box":       (3.5, 2.0),
-    "sphere":    (3.5, 3.6),
-    "blue_box":  (3.5, 0.4),
+    "box":      (3.5, 2.0),
+    "sphere":   (3.5, 3.6),
+    "blue_box": (3.5, 0.4),
 }
-WALL_X = 1.75
-WALL_Y_SPAN = (-0.5, 3.5)
+# The wall is 4 m long, so scoring it as a point called estimates "1.1 m from
+# the wall" that were in fact 0.5 m from its face.
+WALL_X, WALL_Y_SPAN = 1.75, (-0.5, 3.5)
 
-
-def dist_to_wall(x, y):
-    cy = min(max(y, WALL_Y_SPAN[0]), WALL_Y_SPAN[1])
-    return ((x - WALL_X) ** 2 + (y - cy) ** 2) ** 0.5
-
-
-# A lock is scored as correct if the estimate lands nearer the real box than
-# this. Chosen from the measured localization error (0.49 m median, n=21) plus
-# room for the box's own extent -- tight enough that the wall at 1.75 m or the
-# blue distractor 1.6 m away cannot be mistaken for a hit.
+# A detection counts as the box within this distance. From the measured
+# localization error (0.49 m median, n=21) plus the box's own extent, and still
+# tight enough that the wall and the blue distractor 1.6 m away cannot pass.
 HIT_RADIUS = 1.0
 
 TARGET = "box"
 
 _TS = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]')
+_SURVEY = re.compile(
+    r'ANKET r=(\d+) conf=([\d.]+) alan=([\d.]+) '
+    r'dunya=(-?[\d.]+),(-?[\d.]+) drone=(-?[\d.]+),(-?[\d.]+)')
 
 
 def _t(line):
@@ -79,48 +77,39 @@ def _t(line):
     return datetime.strptime(m.group(1), '%Y-%m-%d %H:%M:%S') if m else None
 
 
-def parse_run(lines):
-    """One run's log lines -> a row of metrics."""
-    row = {
-        "found": 0, "arrived": 0, "gave_up": 0, "aborted": 0,
-        "seconds_to_answer": "", "est_x": "", "est_y": "",
-        "error_m": "", "locked": "", "correct": 0,
-        "climbs": 0, "strayed": 0, "vlm_calls": 0, "vlm_errors": 0,
-    }
-    t_start = None
+def nearest_object(x, y):
+    d = {k: ((x - vx) ** 2 + (y - vy) ** 2) ** 0.5 for k, (vx, vy) in TRUTH.items()}
+    cy = min(max(y, WALL_Y_SPAN[0]), WALL_Y_SPAN[1])
+    d["wall"] = ((x - WALL_X) ** 2 + (y - cy) ** 2) ** 0.5
+    name = min(d, key=d.get)
+    return name, d[name], d[TARGET]
+
+
+def parse_survey(lines, run_id):
+    """One run's log -> one row per ranked detection."""
+    rows, t0 = [], None
     for l in lines:
         if ' aranıyor.' in l and '] > ' in l:
-            t_start = _t(l)
-        elif 'Engel asilamiyor' in l:
-            row["climbs"] += 1
-        elif 'Arama alani disinda' in l:
-            row["strayed"] += 1
-        elif 'Gemini Cevabı' in l:
-            row["vlm_calls"] += 1
-            if 'API Hatası' in l:
-                row["vlm_errors"] += 1
-        elif 'Hedef konumu (dunya)' in l:
-            m = re.search(r'x=(-?[\d.]+) y=(-?[\d.]+)', l)
-            if m and not row["est_x"]:
-                ex, ey = float(m.group(1)), float(m.group(2))
-                row["est_x"], row["est_y"] = f"{ex:.2f}", f"{ey:.2f}"
-                dists = {k: ((ex - vx) ** 2 + (ey - vy) ** 2) ** 0.5
-                         for k, (vx, vy) in TRUTH.items()}
-                dists["wall"] = dist_to_wall(ex, ey)
-                row["locked"] = min(dists, key=dists.get)
-                err = dists[TARGET]
-                row["error_m"] = f"{err:.2f}"
-                row["correct"] = int(err <= HIT_RADIUS)
-                row["found"] = 1
-                if t_start:
-                    row["seconds_to_answer"] = f"{(_t(l) - t_start).total_seconds():.0f}"
-        elif 'HEDEFE VARILDI' in l:
-            row["arrived"] = 1
-        elif 'bulunamadı. Aradığım alanı' in l:
-            row["gave_up"] = 1
-        elif 'Aramayı durduruyorum' in l and 'göremiyorum' in l:
-            row["aborted"] = 1
-    return row
+            t0 = _t(l)
+            continue
+        m = _SURVEY.search(l)
+        if not m or t0 is None:
+            continue
+        rank, conf, area, wx, wy, dx, dy = (
+            int(m.group(1)), float(m.group(2)), float(m.group(3)),
+            float(m.group(4)), float(m.group(5)),
+            float(m.group(6)), float(m.group(7)))
+        name, _, box_err = nearest_object(wx, wy)
+        rows.append({
+            "run": run_id,
+            "t": f"{(_t(l) - t0).total_seconds():.0f}",
+            "rank": rank, "conf": f"{conf:.3f}", "area": f"{area:.4f}",
+            "world_x": f"{wx:.2f}", "world_y": f"{wy:.2f}",
+            "drone_x": f"{dx:.2f}", "drone_y": f"{dy:.2f}",
+            "nearest": name, "box_err": f"{box_err:.2f}",
+            "is_box": int(box_err <= HIT_RADIUS),
+        })
+    return rows
 
 
 def split_runs(text):
@@ -134,14 +123,12 @@ def split_runs(text):
     return runs
 
 
-def one_run(idx, total, with_vlm, timeout):
-    env = dict(os.environ, HEADLESS="1", DRONIONS_TARGET=TARGET, COMMAND_DELAY="45")
-    if not with_vlm:
-        env["DRONIONS_NO_VLM"] = "1"
+def one_run(idx, total, timeout):
+    env = dict(os.environ, HEADLESS="1", DRONIONS_TARGET=TARGET,
+               COMMAND_DELAY="45", DRONIONS_NO_VLM="1")
     env.pop("INTERACTIVE", None)
     before = RUN_LOG.stat().st_size if RUN_LOG.exists() else 0
     print(f"[{idx}/{total}] basliyor {datetime.now():%H:%M:%S} ...", flush=True)
-    t0 = time.time()
     try:
         subprocess.run(["bash", str(CHAIN)], env=env, timeout=timeout,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -151,92 +138,105 @@ def one_run(idx, total, with_vlm, timeout):
                    "dronions_ros_node_px4' 2>/dev/null", shell=True)
     time.sleep(3)
     if not RUN_LOG.exists():
-        return None
+        return []
     with open(RUN_LOG, encoding='utf-8', errors='replace') as f:
         f.seek(before)
-        fresh = f.read()
-    runs = split_runs(fresh)
+        runs = split_runs(f.read())
     if not runs:
-        print(f"[{idx}/{total}] log bulunamadi ({time.time() - t0:.0f}s)")
-        return None
-    row = parse_run(runs[-1])
-    print(f"[{idx}/{total}] {'BULDU' if row['found'] else 'bulamadi'} "
-          f"{row['seconds_to_answer'] or '-'}s kilit={row['locked'] or '-'} "
-          f"hata={row['error_m'] or '-'}m tirmanma={row['climbs']}", flush=True)
-    return row
+        print(f"[{idx}/{total}] log bulunamadi")
+        return []
+    rows = parse_survey(runs[-1], idx)
+    tops = [r for r in rows if r["rank"] == 0]
+    hits = [r for r in tops if int(r["is_box"])]
+    print(f"[{idx}/{total}] {len(rows)} ornek, {len(tops)} bakis; "
+          f"en ust aday kutu: {len(hits)}/{len(tops) or 1}", flush=True)
+    return rows
 
 
 def report(rows):
     if not rows:
-        print("Satir yok.")
+        print("Ornek yok.")
         return
-    n = len(rows)
-    found = [r for r in rows if int(r["found"])]
-    correct = [r for r in rows if int(r["correct"])]
-    times = [float(r["seconds_to_answer"]) for r in found if r["seconds_to_answer"]]
-    errs = [float(r["error_m"]) for r in correct if r["error_m"]]
-
-    print(f"\n{'='*58}\nn = {n} kosu\n{'='*58}")
-    print(f"  bir seye kilitlendi : {len(found)}/{n}  ({100*len(found)/n:.0f}%)")
-    print(f"  DOGRU nesneye       : {len(correct)}/{n}  ({100*len(correct)/n:.0f}%)")
-    print(f"  hedefe vardi        : {sum(int(r['arrived']) for r in rows)}/{n}")
-    print(f"  pes etti            : {sum(int(r['gave_up']) for r in rows)}/{n}")
-    print(f"  gorus hatasi        : {sum(int(r['aborted']) for r in rows)}/{n}")
-    if times:
-        print(f"\n  cevaba kadar gecen sure (s): medyan {statistics.median(times):.0f}"
-              f"  min {min(times):.0f}  maks {max(times):.0f}")
-    if errs:
-        print(f"  konum hatasi (m)           : medyan {statistics.median(errs):.2f}"
-              f"  maks {max(errs):.2f}")
-    wrong = {}
+    runs = sorted({r["run"] for r in rows}, key=str)
+    tops = [r for r in rows if int(r["rank"]) == 0]
+    if not tops:
+        print("Siralanmis tespit yok.")
+        return
+    any_box = {}
     for r in rows:
-        if r["locked"] and not int(r["correct"]):
-            wrong[r["locked"]] = wrong.get(r["locked"], 0) + 1
-    if wrong:
-        print("\n  yanlis kilitlenmeler: "
-              + ", ".join(f"{k} x{v}" for k, v in sorted(wrong.items(), key=lambda x: -x[1])))
-    strays = sum(int(r["strayed"]) for r in rows)
-    print(f"\n  alan disina cikma   : {strays} olay / {n} kosu")
-    print(f"  tirmanma            : {sum(int(r['climbs']) for r in rows)} olay")
-    calls = sum(int(r["vlm_calls"]) for r in rows)
-    print(f"  VLM cagrisi         : {calls} ({sum(int(r['vlm_errors']) for r in rows)} hata)")
+        key = (r["run"], r["t"])
+        any_box[key] = any_box.get(key, 0) or int(r["is_box"])
+
+    print(f"\n{'='*60}")
+    print(f"{len(runs)} kosu, {len(tops)} bakis, {len(rows)} siralanmis tespit")
+    print('='*60)
+
+    top_box = sum(int(r["is_box"]) for r in tops)
+    print(f"\n  EN UST ADAY DOGRU MU  (VLM'in yaptigi isin buyuklugu)")
+    print(f"    kutu        : {top_box}/{len(tops)}  ({100*top_box/len(tops):.0f}%)")
+    for name, k in Counter(r["nearest"] for r in tops
+                           if not int(r["is_box"])).most_common():
+        print(f"    {name:12}: {k}/{len(tops)}  ({100*k/len(tops):.0f}%)")
+
+    seen = sum(1 for v in any_box.values() if v)
+    print(f"\n  KUTU ILK 3 ADAY ICINDE : {seen}/{len(any_box)} bakis "
+          f"({100*seen/len(any_box):.0f}%)")
+
+    firsts = []
+    for run in runs:
+        ts = [float(r["t"]) for r in rows if r["run"] == run and int(r["is_box"])]
+        firsts.append(min(ts) if ts else None)
+    got = [f for f in firsts if f is not None]
+    line = f"  KUTUYU ILK GORME       : {len(got)}/{len(runs)} kosu"
+    if got:
+        line += (f", medyan {statistics.median(got):.0f}s "
+                 f"(min {min(got):.0f}, maks {max(got):.0f})")
+    print(line)
+
+    if len(runs) > 1:
+        per_run = []
+        for run in runs:
+            t = [r for r in tops if r["run"] == run]
+            per_run.append(sum(int(r["is_box"]) for r in t) / len(t) if t else 0.0)
+        print(f"\n  kosular arasi dagilim  : "
+              + " ".join(f"{100*p:.0f}%" for p in per_run))
+
+    box = [r for r in rows if int(r["is_box"])]
+    wall = [r for r in rows if r["nearest"] == "wall"]
+    if box and wall:
+        print(f"\n  guven : kutu {statistics.median(float(r['conf']) for r in box):.3f}"
+              f" | duvar {statistics.median(float(r['conf']) for r in wall):.3f}")
+        print(f"  alan  : kutu {statistics.median(float(r['area']) for r in box):.4f}"
+              f" | duvar {statistics.median(float(r['area']) for r in wall):.4f}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("-n", type=int, default=20)
-    ap.add_argument("--with-vlm", action="store_true",
-                    help="Gemini'yi de kullan (kota harcar, ~1 kosu/gun)")
-    ap.add_argument("--timeout", type=int, default=420,
-                    help="kosu basina saniye siniri")
-    ap.add_argument("--report", action="store_true",
-                    help="yeni kosu yapma, mevcut CSV'yi yeniden ozetle")
+    ap.add_argument("-n", type=int, default=5)
+    ap.add_argument("--timeout", type=int, default=420)
+    ap.add_argument("--report", action="store_true")
     a = ap.parse_args()
 
     if a.report:
         if not OUT_CSV.exists():
-            sys.exit(f"{OUT_CSV} yok.")
+            raise SystemExit(f"{OUT_CSV} yok.")
         with open(OUT_CSV, newline='', encoding='utf-8') as f:
             report(list(csv.DictReader(f)))
         return
 
-    if not shutil.which("bash") or not CHAIN.exists():
-        sys.exit("run_sim_chain.sh bulunamadi.")
-
-    rows = []
-    fields = list(parse_run([]).keys())
+    fields = ["run", "t", "rank", "conf", "area", "world_x", "world_y",
+              "drone_x", "drone_y", "nearest", "box_err", "is_box"]
+    all_rows = []
     with open(OUT_CSV, "w", newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=["run"] + fields)
+        w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for i in range(1, a.n + 1):
-            r = one_run(i, a.n, a.with_vlm, a.timeout)
-            if r is None:
-                continue
-            rows.append(r)
-            w.writerow({"run": i, **r})
-            f.flush()          # crash or Ctrl-C keeps what has run so far
+            rows = one_run(i, a.n, a.timeout)
+            all_rows += rows
+            w.writerows(rows)
+            f.flush()          # Ctrl-C keeps what has run so far
     print(f"\n-> {OUT_CSV}")
-    report(rows)
+    report(all_rows)
 
 
 if __name__ == "__main__":

@@ -78,10 +78,13 @@ from pymavlink import mavutil
 
 from config import VOICE_ENABLED, USER_POSITION, USER_YAW
 
-# Measurement mode: skip the VLM and accept YOLO's best candidate. Set by
-# scripts/experiment_repeatability.py so search reliability can be measured
-# without spending API quota, which caps a real run at roughly one per day.
-NO_VLM = os.getenv("DRONIONS_NO_VLM", "") not in ("", "0")
+# Survey mode: skip the VLM, log what the detector ranked at every check, and
+# keep sweeping instead of handing off. Set by
+# scripts/experiment_repeatability.py so the search can be measured without
+# spending API quota, which otherwise caps honest repetition at about one run
+# a day. Never a flight mode -- without the model there is nothing telling
+# *your* box from any box, which is the whole assistive premise.
+SURVEY = os.getenv("DRONIONS_NO_VLM", "") not in ("", "0")
 from assistant.command_parser import parse_command
 from assistant.agent import capture_and_analyze, select_candidate, answer_followup
 from assistant.dialogue import Dialogue
@@ -1148,20 +1151,29 @@ def main():
                     # location produced a left-edge coordinate on all six calls
                     # measured (x=0.01-0.03) no matter where the object was, so
                     # the answer could not be matched to a detection at all.
-                    if NO_VLM:
-                        # Accept YOLO's own best candidate and skip the model
-                        # entirely. This exists to measure the *search*: how
-                        # long the sweep takes to put the target in frame, and
-                        # how often the detector alone picks the right object.
-                        # Those numbers were previously unobtainable, because
-                        # every run consumed API quota and the two runs on
-                        # record that failed both failed on the API rather than
-                        # on the search -- leaving the reliability of the two
-                        # confounded. Never a flight mode: without the model
-                        # there is nothing distinguishing *your* box from any
-                        # box, which is the entire assistive premise.
-                        result = {"found": True, "index": 0,
-                                  "message": "[NO-VLM] YOLO en iyi adayi otomatik onaylandi"}
+                    if SURVEY:
+                        # Record what the detector ranked, and carry on flying.
+                        #
+                        # Auto-accepting YOLO's best candidate instead was the
+                        # first attempt and measured almost nothing: the wall
+                        # fills 68% of the frame from the takeoff spot, so every
+                        # run ended one second into the search having locked
+                        # onto it, and repeating that produced copies of a
+                        # single viewpoint rather than a distribution over the
+                        # sweep. Never handing off means one run yields a sample
+                        # at every check across the whole area, which is the
+                        # question worth asking: how often is the detector alone
+                        # right, from the places the search actually looks?
+                        for rank, c in enumerate(search_candidates[:3]):
+                            w = locate_target(c, node.pose_xyz(),
+                                              node.orientation(), target=target)
+                            log_event(
+                                f"ANKET r={rank} conf={c.confidence:.3f} "
+                                f"alan={c.relative_area:.4f} "
+                                f"dunya={f'{w[0]:.2f},{w[1]:.2f}' if w else 'yok'} "
+                                f"drone={node.pose_xyz()[0]:.2f},{node.pose_xyz()[1]:.2f}")
+                        last_vlm_check_time = current_time
+                        continue
                     else:
                         result = select_candidate(frame, search_candidates, target,
                                                   reference_img_path=ref_path)
@@ -1231,8 +1243,7 @@ def main():
                         # Gemini's sentence is the one thing geometry cannot
                         # supply -- what the object looks like and what it sits
                         # next to. Kept to append to the spoken location.
-                        found_context = ("" if NO_VLM else
-                                         result['message'].split(']', 1)[-1].strip())
+                        found_context = result['message'].split(']', 1)[-1].strip()
                         current_phase = PHASE_CENTER
                     elif not rate_limited and not result['found']:
                         print(f"\n[?] '{target}' bulunamadı. Aramaya devam ediliyor...")
