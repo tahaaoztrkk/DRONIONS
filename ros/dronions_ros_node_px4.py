@@ -98,7 +98,8 @@ from perception.filters import filter_candidates
 from perception.tracker import Tracker
 from navigation.navigator import get_navigation_decision
 from navigation.spatial import (locate_target, describe_target,
-                                describe_direction, relative_to_user)
+                                describe_direction, relative_to_user,
+                                size_plausible, implied_width)
 from ui.overlay import draw_overlay
 
 PHASE_SEARCH = "VLM SEARCHING"
@@ -967,6 +968,7 @@ def main():
     last_report = ""
     vlm_errors = 0
     pose_log_after = 0.0
+    size_warned = False
     stray_report_after = 0.0
     locked_track_id = None
     locked_point = (0.5, 0.5)
@@ -1163,6 +1165,31 @@ def main():
                 # frame -- YOLO's job here is recall, not precision.
                 search_candidates = filter_candidates(detector.detect(frame))
 
+                # Throw out anything whose physical size cannot be the target.
+                # The negative prompts were meant to do this and cannot: YOLO
+                # labels the wall "cardboard box", so a negative class of
+                # "wall" never matches. Size does not depend on the detector
+                # naming things correctly -- measured over 106 detections, this
+                # rejects every one of the 69 wall hits while keeping 81% of
+                # real box hits. It also saves API calls, since a viewpoint
+                # left with no candidates never reaches the model at all.
+                # Not in survey mode: that exists to record what the detector
+                # produces unfiltered, and applying the gate first would both
+                # hide the behaviour being measured and make the gate
+                # impossible to evaluate against. The implied width is logged
+                # per detection instead, so the threshold can be re-checked
+                # offline against any future campaign.
+                if target and not SURVEY:
+                    dpos, dquat = node.pose_xyz(), node.orientation()
+                    kept = [c for c in search_candidates
+                            if size_plausible(c, dpos, dquat, target)]
+                    if len(kept) != len(search_candidates) and not size_warned:
+                        log_event(f"Boyut elemesi devrede: {len(search_candidates)} "
+                                  f"adaydan {len(kept)} tanesi '{target}' "
+                                  f"boyutunda olabilir.")
+                        size_warned = True
+                    search_candidates = kept
+
                 cv2.imshow("DRONIONS AI",
                            draw_overlay(frame, search_candidates, None, phase=current_phase))
                 if (cv2.waitKey(1) & 0xFF) == ord('q'):
@@ -1204,11 +1231,14 @@ def main():
                         for rank, c in enumerate(search_candidates[:3]):
                             w = locate_target(c, node.pose_xyz(),
                                               node.orientation(), target=target)
+                            iw = implied_width(c, node.pose_xyz(), node.orientation())
+                            dx, dy, _ = node.pose_xyz()
                             log_event(
                                 f"ANKET r={rank} conf={c.confidence:.3f} "
                                 f"alan={c.relative_area:.4f} "
+                                f"genislik={f'{iw:.2f}' if iw else 'yok'} "
                                 f"dunya={f'{w[0]:.2f},{w[1]:.2f}' if w else 'yok'} "
-                                f"drone={node.pose_xyz()[0]:.2f},{node.pose_xyz()[1]:.2f}")
+                                f"drone={dx:.2f},{dy:.2f}")
                         last_vlm_check_time = current_time
                         continue
                     else:

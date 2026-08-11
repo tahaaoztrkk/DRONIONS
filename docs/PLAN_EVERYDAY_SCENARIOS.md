@@ -333,6 +333,40 @@ Three consequences worth carrying into the design:
   The gap between "box ranked first" and "box detected at all" is two
   percentage points. Effort belongs on detection recall.
 
+### What the campaign then paid for
+
+The obvious reading of "the wall wins 71% of viewpoints" is that the VLM is
+carrying the system, and the fix is a better VLM. The data says something
+cheaper. Every detection's **physical size** can be computed before any model
+is called, from the same ground-plane range already used to locate the target,
+and the two classes separate cleanly:
+
+| | implied width, measured | true |
+|---|---|---|
+| box | 0.53 – 1.12 m (median 0.61) | 0.63 m |
+| wall | 1.26 – 4.90 m (median 3.70) | 4.0 m |
+
+An upper bound of 2.5× the target's expected width sits inside that gap: over
+the 106 recorded detections it rejects **69 of 69 wall hits** while keeping
+**81% of real box hits**. That is now `size_plausible()` in the search loop.
+
+This is the filter the negative prompts were supposed to be and never were.
+`"wall"` as a negative class cannot fire, because YOLO-World labels the
+scenario wall *"cardboard box"* — the label is wrong, so label-based exclusion
+has nothing to work with. Size does not care what the detector calls a thing,
+which is also why it should generalise: in any real room something larger than
+the target will be in view, and rejecting it should not depend on the detector
+naming it correctly.
+
+Two side effects worth noting. It saves API calls, since a viewpoint left with
+no plausible candidate never reaches the model at all — on these numbers that
+is most viewpoints. And it does not run in survey mode, so the raw detector
+behaviour stays measurable and the threshold can be re-checked against future
+campaigns; the implied width is logged per detection for exactly that.
+
+Not yet flight-tested: the threshold comes from recorded data, not from a run
+made with the gate active.
+
 Secondary observations from the same runs: the box was seen at least once in
 4 of 5 runs (median 50 s, range 39–86 s), and one run never saw it at all. The
 wall is *more* confident than the box (median 0.233 vs 0.183) and 42× larger in

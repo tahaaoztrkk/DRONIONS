@@ -208,6 +208,64 @@ def range_from_apparent_size(candidate, target: str,
     return width_m * focal_px / px
 
 
+# How far the physical size implied by a detection may stray from the target's
+# expected width before it is thrown out.
+#
+# Measured over 106 real detections from five survey flights. The scenario box
+# implies 0.53-1.12 m across (it is 0.63 m), while the wall implies 1.26-4.90 m
+# (it is 4.0 m) -- a clean gap. An upper bound of 2.5x the expected width sits
+# inside it: every one of the 69 wall detections is rejected and 81% of box
+# detections survive.
+SIZE_MIN_RATIO = 0.30
+SIZE_MAX_RATIO = 2.50
+
+
+def implied_width(candidate, drone_xyz, drone_quat,
+                  plane_z: float = 0.0) -> Optional[float]:
+    """How wide the detection would really be, given where its base sits.
+
+    The range comes from the same ground-plane projection used to locate the
+    target, so this costs nothing extra and is available before any model is
+    called.
+    """
+    hit = project_to_plane(
+        drone_xyz,
+        camera_ray_world(candidate.normalized_center[0],
+                         candidate.bbox[3] / candidate.image_height
+                         if getattr(candidate, "image_height", 0)
+                         else candidate.normalized_center[1],
+                         drone_quat),
+        plane_z)
+    if hit is None or not getattr(candidate, "image_width", 0):
+        return None
+    rng = math.dist(hit, drone_xyz)
+    frac = (candidate.bbox[2] - candidate.bbox[0]) / candidate.image_width
+    return frac * 2.0 * rng * math.tan(CAMERA_HFOV / 2.0)
+
+
+def size_plausible(candidate, drone_xyz, drone_quat, target: str) -> bool:
+    """Could a thing that size be the target at all?
+
+    This is the filter the negative prompts were supposed to be and are not.
+    YOLO-World labels the scenario wall "cardboard box", so a negative class of
+    "wall" never fires; measured over 80 viewpoints, the wall was the
+    top-ranked candidate in 71% of them. What separates them is not the label
+    but the physics: a detection covering a third of the frame at three metres
+    is several metres across, and the user asked for a box.
+
+    Generalises past this scenario, which is the point -- in any real room
+    there will be something larger than the target in view, and rejecting it
+    should not depend on the detector naming it correctly.
+    """
+    expected = OBJECT_WIDTHS.get((target or "").lower().strip())
+    if not expected:
+        return True                 # nothing on file: no opinion
+    w = implied_width(candidate, drone_xyz, drone_quat)
+    if w is None:
+        return True                 # no range: no opinion
+    return expected * SIZE_MIN_RATIO <= w <= expected * SIZE_MAX_RATIO
+
+
 def locate_target(candidate, drone_xyz, drone_quat, plane_z: Optional[float] = None,
                   use_bottom: bool = True, target: str = ""):
     """DetectionCandidate + drone pose -> estimated world position.
