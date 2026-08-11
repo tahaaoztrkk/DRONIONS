@@ -118,6 +118,16 @@ def camera_ray_world(u_norm: float, v_norm: float, quat,
     return _quat_rotate(quat, [c / n for c in ray])
 
 
+# Horizontal range is allowed to reach this multiple of the drone's height
+# above the plane, and no further. Rejecting only upward rays is not enough:
+# a ray descending a tenth of a degree still meets the plane, hundreds of
+# metres away, and range error grows as h/sin^2(theta) -- so near the horizon a
+# one-degree pointing error becomes tens of metres. At this ratio a 1 deg error
+# costs well under a metre, which is the accuracy the rest of the pipeline was
+# measured at. A run once projected a target to (18.9, -12.5) this way.
+MAX_RANGE_HEIGHT_RATIO = 5.0
+
+
 def project_to_plane(drone_xyz, ray_world, plane_z: float = 0.0
                      ) -> Optional[Tuple[float, float, float]]:
     """Where the ray meets a horizontal plane, or None if it never does.
@@ -126,33 +136,138 @@ def project_to_plane(drone_xyz, ray_world, plane_z: float = 0.0
     by itself. For a target resting on the floor (plane_z = 0) this is exact;
     for something on a table the caller must supply that height, otherwise the
     estimate lands beyond the object.
+
+    Returns None as well when the intersection is too far out to be worth
+    believing -- see MAX_RANGE_HEIGHT_RATIO. Refusing to answer is the right
+    failure here: the caller logs "position could not be computed" and keeps
+    searching, where a number would be spoken to someone who cannot check it.
     """
     dz = ray_world[2]
     if dz >= -1e-6:                 # level or upward: never meets the plane
         return None
+    height = drone_xyz[2] - plane_z
+    if height <= 0:                 # at or below the plane: nothing to see
+        return None
     t = (plane_z - drone_xyz[2]) / dz
     if t <= 0:
         return None
-    return (drone_xyz[0] + t * ray_world[0],
-            drone_xyz[1] + t * ray_world[1],
-            plane_z)
+    hit = (drone_xyz[0] + t * ray_world[0],
+           drone_xyz[1] + t * ray_world[1],
+           plane_z)
+    reach = math.hypot(hit[0] - drone_xyz[0], hit[1] - drone_xyz[1])
+    if reach > MAX_RANGE_HEIGHT_RATIO * height:
+        return None
+    return hit
 
 
-def locate_target(candidate, drone_xyz, drone_quat, plane_z: float = 0.0,
-                  use_bottom: bool = True):
+# Typical real-world width of a target, in metres. Only used to sanity-check
+# which surface an object is standing on -- never as the position itself, since
+# a bounding box is far too noisy to range from directly. Values are the
+# widest face the object usually presents; the scenario box is 0.63 x 0.40 m,
+# so 0.5 is its mean aspect.
+OBJECT_WIDTHS = {
+    "box": 0.50, "backpack": 0.35, "laptop": 0.33, "keyboard": 0.35,
+    "bottle": 0.08, "mug": 0.10, "phone": 0.075, "wallet": 0.10,
+    "keys": 0.06, "charger": 0.07, "mouse": 0.06,
+}
+
+# Heights the target might be resting on. Floor first: when the size check
+# cannot separate two planes, the floor is the safer answer, because it is
+# where most things are and where an over-estimate is smallest.
+SUPPORT_HEIGHTS = (0.0, 0.75, 0.45)     # floor, table/counter, seat/low shelf
+
+# A raised surface must fit the apparent size this many times better than the
+# floor before it is believed.
+#
+# Chosen from the gap between the two cases rather than by taste. Objects
+# genuinely on a 0.75 m surface produce evidence ratios of 17-56 (mug 41,
+# bottle 17, laptop 56, phone 44, keys 37), while the scenario box -- which is
+# on the floor and which the pipeline already localizes to 0.01 m -- never
+# exceeds 9.2 even with its detector box 3x too wide. Anywhere in that gap
+# separates them; the middle of it leaves room for both to be noisier than
+# measured.
+FLOOR_SWITCH_MARGIN = 12.0
+
+
+def range_from_apparent_size(candidate, target: str,
+                             hfov: float = CAMERA_HFOV) -> Optional[float]:
+    """Distance implied by how wide the object looks, or None.
+
+    Deliberately crude. Its job is not to measure range -- a detector box is
+    much too unstable for that -- but to tell two candidate support surfaces
+    apart, where the answers differ by metres rather than centimetres.
+    """
+    width_m = OBJECT_WIDTHS.get((target or "").lower().strip())
+    img_w = getattr(candidate, "image_width", 0)
+    if not width_m or not img_w:
+        return None
+    px = candidate.bbox[2] - candidate.bbox[0]
+    if px <= 1:
+        return None
+    focal_px = (img_w / 2.0) / math.tan(hfov / 2.0)
+    return width_m * focal_px / px
+
+
+def locate_target(candidate, drone_xyz, drone_quat, plane_z: Optional[float] = None,
+                  use_bottom: bool = True, target: str = ""):
     """DetectionCandidate + drone pose -> estimated world position.
 
-    By default the ray is cast through the *bottom* edge of the box rather than
-    its centre. An object standing on the floor touches the ground there, so
-    that ray genuinely meets the ground plane at the object; a ray through the
-    centre passes through a point part-way up the object and therefore lands
-    beyond it. Measured on the scenario box, centre-ray estimates overshot by a
-    consistent 0.5-0.8 m.
+    The ray is cast through the *bottom* edge of the box rather than its
+    centre. An object standing on a surface touches it there, so that ray
+    genuinely meets the surface at the object; a ray through the centre passes
+    part-way up the object and lands beyond it. Measured on the scenario box,
+    centre-ray estimates overshot by a consistent 0.5-0.8 m.
+
+    Which surface, though, was previously assumed to be the floor. Indoors that
+    is wrong for most things worth finding -- a mug on a table projected onto
+    the floor lands well past the table, and the error grows with how oblique
+    the view is. Passing plane_z keeps the old fixed behaviour; leaving it None
+    picks among SUPPORT_HEIGHTS by asking which one puts the object at the
+    distance its apparent size implies. With no size on file the floor is used,
+    which is exactly what the code did before.
     """
     u, v = candidate.normalized_center
     if use_bottom and getattr(candidate, "image_height", 0):
         v = candidate.bbox[3] / candidate.image_height
-    return project_to_plane(drone_xyz, camera_ray_world(u, v, drone_quat), plane_z)
+    ray = camera_ray_world(u, v, drone_quat)
+
+    if plane_z is not None:
+        return project_to_plane(drone_xyz, ray, plane_z)
+
+    # Measured tolerance of this choice: the right surface is still picked with
+    # the box up to 3x too wide, but only ~10% too narrow before it falls back
+    # towards the floor. The asymmetry is the safe way round -- a narrow box
+    # makes the object look far away, which agrees with the floor, so a bad
+    # size estimate degrades to the behaviour this replaced rather than
+    # inventing a new answer. Worth knowing that detector boxes shrink under
+    # occlusion, so that is the direction real errors will take.
+    expected = range_from_apparent_size(candidate, target)
+    floor_hit = project_to_plane(drone_xyz, ray, SUPPORT_HEIGHTS[0])
+    if expected is None:
+        return floor_hit
+
+    floor_gap = (abs(math.dist(floor_hit, drone_xyz) - expected)
+                 if floor_hit else None)
+    best, best_gap = None, None
+    for z in SUPPORT_HEIGHTS[1:]:
+        hit = project_to_plane(drone_xyz, ray, z)
+        if hit is None:
+            continue
+        gap = abs(math.dist(hit, drone_xyz) - expected)
+        if best_gap is None or gap < best_gap:
+            best, best_gap = hit, gap
+
+    if best is None:
+        return floor_hit
+    if floor_gap is None:
+        return best
+    # Leaving the floor takes clear evidence, not a marginal win. The floor is
+    # right for most things and is where the pipeline's accuracy was measured;
+    # a slightly over-wide detector box otherwise lifts an object that is
+    # genuinely on the ground onto an imaginary table and shortens the distance
+    # the user is told. Being wrong in the familiar direction beats being wrong
+    # in a new one.
+    return best if best_gap * FLOOR_SWITCH_MARGIN < floor_gap else floor_hit
 
 
 def relative_to_user(target_xy, user_xy, user_yaw: float) -> Tuple[float, float]:

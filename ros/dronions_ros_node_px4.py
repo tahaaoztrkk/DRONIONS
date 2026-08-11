@@ -1304,8 +1304,12 @@ def main():
                     # rather than from asking the model where it thinks the
                     # object is, which it answers badly (measured: a left-edge
                     # coordinate on every call regardless of the truth).
+                    # `target` is passed so the support surface can be chosen
+                    # rather than assumed: indoors most things worth finding
+                    # are on a table, and projecting those onto the floor put
+                    # them over a metre too far away.
                     target_xyz = locate_target(nearest, node.pose_xyz(),
-                                               node.orientation())
+                                               node.orientation(), target=target)
                     if target_xyz:
                         last_report = describe_target(
                             target_xyz, USER_POSITION, USER_YAW,
