@@ -115,6 +115,15 @@ MAX_LINEAR = 0.3
 MAX_ANGULAR = 0.6
 EXPLORE_LINEAR = 0.25
 OBSTACLE_SAFE_DISTANCE = 1.0
+
+# Half the width the airframe actually sweeps, from the model rather than
+# assumed: x500_base puts the rotors at +/-0.174 m and the props are 13 inch
+# (1345_prop_*.stl), so 0.174 + 0.165 = 0.339 m -- a vehicle 0.68 m across.
+AIRFRAME_HALF_WIDTH = 0.339
+# Clearance either side before a return counts as being in the way. Small on
+# purpose: household doorways are 0.8-0.9 m, so there is very little to spend.
+CORRIDOR_CLEARANCE = 0.06
+CORRIDOR_HALF_WIDTH = AIRFRAME_HALF_WIDTH + CORRIDOR_CLEARANCE
 AVOID_ANGULAR = 0.35
 # How long a turn is committed to after touching an obstacle. Randomized so
 # repeated contacts with the same wall don't produce the same escape path.
@@ -545,11 +554,39 @@ class DronionsRosNodePX4(Node):
             return True, self._frame.copy()
 
     def _on_scan(self, msg: LaserScan):
-        finite = [r for r in msg.ranges if math.isfinite(r)]
-        self._min_range = min(finite) if finite else float('inf')
+        # Keep each return's lateral offset, not just the nearest range. A
+        # single min() cannot tell a wall from a doorway: both put something
+        # inside OBSTACLE_SAFE_DISTANCE, and only the *shape* of the scan says
+        # whether there is a way through.
+        self._min_range = float('inf')
+        self._blocked = False
+        for i, r in enumerate(msg.ranges):
+            if not math.isfinite(r):
+                continue
+            self._min_range = min(self._min_range, r)
+            if r >= OBSTACLE_SAFE_DISTANCE:
+                continue
+            angle = msg.angle_min + i * msg.angle_increment
+            # How far to the side of the flight path this return sits: a door
+            # frame well off the centreline is not in the way, a wall straight
+            # ahead is.
+            #
+            # Currently this changes nothing, and that was worth measuring
+            # rather than assuming. The lidar fan is only +/-0.35 rad, which at
+            # 0.9 m spans +/-0.33 m -- narrower than the corridor itself -- so
+            # every return that is close enough to matter is already inside it.
+            # The test is kept because it is the correct rule and becomes load
+            # bearing the moment the fan is widened, which the doorway work
+            # needs anyway: at present the frame edges are invisible until the
+            # drone is too close to avoid them.
+            if abs(r * math.sin(angle)) < CORRIDOR_HALF_WIDTH:
+                self._blocked = True
 
     def obstacle_ahead(self) -> bool:
-        return self._min_range < OBSTACLE_SAFE_DISTANCE
+        return self._blocked
+
+    def min_range(self) -> float:
+        return self._min_range
 
     def _on_state(self, msg: State):
         self.state = msg

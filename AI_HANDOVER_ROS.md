@@ -262,5 +262,9 @@ error, 0.49 m median distance error**.
   inference. The resolution costs image-plumbing CPU, not inference.
 - `obstacle_ahead()` is used in SEARCH only; TRACK ignores the lidar entirely.
   Deliberate, not an oversight.
-- **Indoor scenarios are still blocked** by `OBSTACLE_SAFE_DISTANCE = 1.0` m
-  against ~0.8 m doorways.
+- **Indoor scenarios are blocked by the airframe, not the threshold.** Measured
+  rather than assumed: x500 sweeps 0.68 m wide (rotors ±0.174 m, 13 inch props),
+  so a 0.8 m doorway leaves ±6 cm. The lidar fan spans only ±0.33 m at 0.9 m and
+  misses the door edges until it is too late, and a lateral-corridor test in
+  place of `min(ranges)` changes nothing at that fan width. A smaller vehicle is
+  the prior decision.

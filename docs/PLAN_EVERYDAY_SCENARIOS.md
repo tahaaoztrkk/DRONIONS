@@ -288,15 +288,90 @@ sound, and it measures the system as it actually operates.
 
 ---
 
+## 5d. Result: how much work the VLM stage is actually doing (n=80 viewpoints)
+
+The system pairs a cheap detector with an expensive model, and the reason given
+for that has always been "YOLO alone confuses the wall for the box". True, but
+asserted rather than measured — and the two end-to-end failures on record were
+both the Gemini API, so search reliability and system reliability could not be
+told apart at all.
+
+`scripts/experiment_repeatability.py` runs the node in survey mode: the VLM is
+skipped, the drone flies the full sweep without ever handing off, and every
+ranked detection is logged with its world position and scored against the
+scenario's static object positions. Five runs, 80 viewpoints, 106 detections,
+no API quota spent.
+
+| Top-ranked detection is… | share of viewpoints |
+|---|---|
+| the **wall** | **71%** (57/80) |
+| the real box | 12% (10/80) |
+| the blue distractor | 10% (8/80) |
+| the sphere | 6% (5/80) |
+
+So a detector-only system flies at the wall in roughly seven viewpoints out of
+ten. That is the headline, but the more useful number is next to it.
+
+**The box appears anywhere in the detector's candidates in only 14% of
+viewpoints (11/80)** — barely above the 12% where it is ranked first. In other
+words, when YOLO sees the box it almost always ranks it top (10 of 11); the
+failure is not ranking, it is recall. And with a mean of **1.3 candidates per
+viewpoint**, the question actually reaching the VLM is usually not "which of
+these is yours" but "is this one thing yours" — to which the answer is
+overwhelmingly no.
+
+Three consequences worth carrying into the design:
+
+- **The VLM's job is rejection, not selection.** It cannot rescue a viewpoint
+  where the detector produced no box, because it only ever sees the detector's
+  crops. Its value is refusing the wall 86% of the time.
+- **Per-viewpoint recall bounds the whole cascade**, and it is 14%. The system
+  works because the sweep supplies ~16 viewpoints per run and needs only one
+  good one — redundancy, not per-frame reliability. That is also why the
+  give-up deadline has to cover a full lap.
+- **Raising the number of crops sent to the VLM would buy almost nothing.**
+  The gap between "box ranked first" and "box detected at all" is two
+  percentage points. Effort belongs on detection recall.
+
+Secondary observations from the same runs: the box was seen at least once in
+4 of 5 runs (median 50 s, range 39–86 s), and one run never saw it at all. The
+wall is *more* confident than the box (median 0.233 vs 0.183) and 42× larger in
+frame (0.273 vs 0.0065), which is why confidence-only ranking puts it first and
+why the size gate at hand-off matters. The unexplained 19 m excursion did not
+recur in any of the five runs.
+
+---
+
 ## 6. Environment
 
 - **Indoor room, human scale.** Ceiling 2.4 m — today's `HOVER_ALTITUDE = 2.0`
   and the 5.5 m climb-over are both illegal indoors; cruise drops to ~1.2 m and
   the climb must be ceiling-clamped.
-- **Doorways ~0.8 m.** Current avoidance turns away from anything within
-  `OBSTACLE_SAFE_DISTANCE = 1.0 m`, so it can never pass a doorway — and S3 is
-  about finding a door. Passing a gap is a different behaviour from avoiding a
-  wall and must be added.
+- **Doorways ~0.8 m, and the vehicle does not fit through them in any useful
+  sense.** This was previously written down as an avoidance-threshold problem
+  (`OBSTACLE_SAFE_DISTANCE = 1.0 m` being wider than a doorway), which turned
+  out to be wrong when it was finally measured rather than assumed. Three
+  things are actually in the way:
+
+  1. **The airframe is 0.68 m wide.** x500_base puts the rotors at ±0.174 m and
+     the props are 13 inch, so the swept half-width is 0.339 m. A 0.8 m doorway
+     leaves **±6 cm** of lateral tolerance, which a sweep flying at 0.25 m/s on
+     yaw-tracked waypoints cannot hold.
+  2. **The lidar cannot see the frame in time.** The fan is ±0.35 rad, spanning
+     only ±0.33 m at 0.9 m range, so the door edges fall outside it until the
+     drone is already too close to turn. Simulated off-centre approaches at
+     0.5 m read as clear while the airframe would strike the frame.
+  3. **Replacing `min(ranges)` with a lateral-corridor test changes nothing**
+     at this fan width — every return close enough to matter is already inside
+     the corridor. The test is implemented and correct, and becomes useful only
+     once the fan is widened.
+
+  The honest reading is that this is not a tuning problem. The concept is a
+  *miniature* drone launched from the wrist; x500 is a 500-class quadrotor,
+  roughly ten times that. Options are to model wider (1.0–1.2 m) doorways and
+  document the mismatch, to build a scaled-down airframe and retune PX4 for it,
+  or to restrict indoor scenarios to open-plan space. Choosing the vehicle is
+  prior to any avoidance work.
 - **A user model** with position and facing, plus named locations (table, shelf,
   door) so a waypoint-style mode is also possible for comparison.
 - **Textured meshes only.** Measured here: keys (7 cm), phone (15 cm), mug
@@ -369,8 +444,11 @@ Settle it on **one textured table** before building the room. The harness exists
   switching `GEMINI_MODEL` does. A 429 is not always the daily cap — there is a
   per-minute limit that recovers within seconds, which is why only *consecutive*
   failures are treated as fatal.
-- **Indoor scenarios remain blocked** by `OBSTACLE_SAFE_DISTANCE = 1.0` m
-  against ~0.8 m doorways — the single largest obstacle to §4's scenario set.
+- **Indoor scenarios are blocked by the vehicle, not the threshold.** The
+  0.8 m-doorway problem was recorded here as an avoidance-tuning issue and is
+  not one: the airframe is 0.68 m wide, leaving ±6 cm of tolerance, and the
+  lidar fan cannot see the frame in time regardless. See §6. Picking the
+  vehicle comes before any further avoidance work.
 - **Untextured primitives are invisible to YOLO-World** (§6, Small objects), so
   the realistic indoor scene needs textured assets before any "can it find keys"
   result means anything. The node now logs each target's prompt expansion and
