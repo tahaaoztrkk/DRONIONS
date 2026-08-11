@@ -154,6 +154,7 @@ SEARCH_TIMEOUT_MARGIN = 1.6
 # trace at all, so a nineteen-metre excursion left nothing in the log to
 # diagnose it from -- only the moment tracking noticed, long afterwards.
 POSE_LOG_INTERVAL = 10.0        # s
+SIZE_LOG_INTERVAL = 20.0        # s
 STRAY_REPORT_INTERVAL = 5.0     # s
 # Before abandoning a blocked waypoint, try going *over* the obstacle. This is
 # the quadrotor's one real advantage over the ground rig and nothing in the
@@ -188,6 +189,13 @@ TRACK_ALT_RATE = 0.6        # m/s of hold-altitude adjustment at full error
 # believed. A single frame is not evidence: one detection of the wall filling
 # the frame was enough to declare arrival 3.2 m from the real target.
 ARRIVAL_CONFIRM_FRAMES = 5
+
+# Furthest the geometric estimate may put the target while still believing an
+# ARRIVED from frame coverage. Generous: the estimate carries ~0.5 m of error
+# and the approach stops short anyway, so this only has to catch the case where
+# the two disagree by metres -- which is what a wall filling the frame looks
+# like.
+ARRIVAL_MAX_DISTANCE = 2.5
 # How far (normalized image units) a YOLO detection may sit from the centre
 # Gemini reported and still count as the same object. Beyond this the two
 # perception layers simply disagree about what is in the frame.
@@ -204,6 +212,11 @@ GEMINI_AREA_RATIO_MAX = 6.0
 # and only start the approach once it is comfortably inside the frame.
 CENTER_OK = 0.20            # normalized offset from frame centre, both axes
 CENTERING_MAX_SECONDS = 8.0 # give up and go back to searching
+
+# Yaw rate used to bring a target back into view when centring loses it.
+# Slower than the avoidance turn: the object is near the frame edge and a brisk
+# turn sweeps it straight out the other side.
+SEARCH_RECOVER_ANGULAR = 0.15
 # Tracking had no spatial bound at all, only the search did. A lock onto
 # something far away never grows enough in frame to satisfy the arrival test,
 # so the drone drove forward indefinitely -- measured 131 m from the scenario,
@@ -968,7 +981,8 @@ def main():
     last_report = ""
     vlm_errors = 0
     pose_log_after = 0.0
-    size_warned = False
+    size_log_after = 0.0
+    size_rejected_total = 0
     stray_report_after = 0.0
     locked_track_id = None
     locked_point = (0.5, 0.5)
@@ -1183,11 +1197,16 @@ def main():
                     dpos, dquat = node.pose_xyz(), node.orientation()
                     kept = [c for c in search_candidates
                             if size_plausible(c, dpos, dquat, target)]
-                    if len(kept) != len(search_candidates) and not size_warned:
-                        log_event(f"Boyut elemesi devrede: {len(search_candidates)} "
-                                  f"adaydan {len(kept)} tanesi '{target}' "
-                                  f"boyutunda olabilir.")
-                        size_warned = True
+                    if len(kept) != len(search_candidates):
+                        size_rejected_total += len(search_candidates) - len(kept)
+                        # Rate-limited rather than once-only: how often this
+                        # fires is the measurement, and a single line at the
+                        # start of a flight cannot show it.
+                        if time.time() > size_log_after:
+                            log_event(f"Boyut elemesi: {len(search_candidates)} adaydan "
+                                      f"{len(kept)} tanesi '{target}' boyutunda olabilir "
+                                      f"(toplam {size_rejected_total} eleme).")
+                            size_log_after = time.time() + SIZE_LOG_INTERVAL
                     search_candidates = kept
 
                 cv2.imshow("DRONIONS AI",
@@ -1353,8 +1372,24 @@ def main():
                     break
 
                 if nearest is None or gap > GEMINI_POINT_MAX_DIST:
-                    # Lost it while turning; nothing to centre on.
-                    node.set_desired_twist(hold_altitude_twist(node.current_altitude()))
+                    # Nothing to centre on this frame. Turn towards where it was
+                    # rather than hovering and waiting for it to come back.
+                    #
+                    # Measured: the model confirms targets caught at the very
+                    # edge of the sweep -- three confirmations in one flight at
+                    # x=0.01, 0.02 and 0.54 -- and an object clipped by the
+                    # frame border is exactly the one the detector then fails to
+                    # find again. Holding station left it there until the
+                    # deadline expired, throwing away a confirmation that had
+                    # already cost an API call. Yawing the way it was last seen
+                    # brings it inward.
+                    twist = Twist()
+                    twist.linear.z = compute_altitude_vz(node.current_altitude())
+                    if center_point[0] < 0.5:
+                        twist.angular.z = SEARCH_RECOVER_ANGULAR
+                    else:
+                        twist.angular.z = -SEARCH_RECOVER_ANGULAR
+                    node.set_desired_twist(twist)
                     if time.time() > center_deadline:
                         # Three different failures used to share one message,
                         # which made it impossible to tell a target that drifted
@@ -1580,6 +1615,54 @@ def main():
                             best_candidate = cand
                             locked_track_id = cand.track_id
                         locked_point = best_candidate.normalized_center
+
+                    # Keep checking that what is being chased is still the
+                    # right size. The lock survives occlusion by design, and a
+                    # measured run shows what that costs: the approach drifted
+                    # onto the wall, which then filled the frame and read as
+                    # arrival 2 s after the drone had been told the target was
+                    # 3.7 m away.
+                    if target and not size_plausible(best_candidate, node.pose_xyz(),
+                                                     node.orientation(), target):
+                        iw = implied_width(best_candidate, node.pose_xyz(),
+                                           node.orientation())
+                        msg = (f"Takip birakildi: izlenen nesne {iw:.1f} m genisliginde, "
+                               f"'{target}' bu boyutta olamaz.")
+                        log_event(msg)
+                        print(f"\n[!] {msg}")
+                        node.set_target_altitude(HOVER_ALTITUDE)
+                        node.set_desired_twist(
+                            hold_altitude_twist(node.current_altitude()))
+                        locked_track_id = None
+                        current_phase = PHASE_SEARCH
+                        continue
+
+                    # Something solid between here and the target. TRACK used to
+                    # ignore the lidar entirely, which was defensible only while
+                    # nothing had been seen to happen: in flight the drone flew
+                    # into the wall on its way to a target 3.7 m beyond it. The
+                    # approach is abandoned rather than routed around -- the
+                    # answer has already been spoken, and telling the user the
+                    # way is blocked is more use than silently colliding.
+                    tgt_world = locate_target(best_candidate, node.pose_xyz(),
+                                              node.orientation(), target=target)
+                    tgt_dist = (math.dist(tgt_world, node.pose_xyz())
+                                if tgt_world else None)
+                    if (node.obstacle_ahead() and tgt_dist is not None
+                            and tgt_dist > node.min_range() + OBSTACLE_SAFE_DISTANCE):
+                        msg = (f"Yaklasilamiyor: {node.min_range():.1f} m onde engel var, "
+                               f"hedef {tgt_dist:.1f} m otede.")
+                        log_event(msg)
+                        print(f"\n[!] {msg}")
+                        dialogue.say("Hedefe yaklaşamıyorum, önümde bir engel var. "
+                                     "Konumu size söyledim.")
+                        node.set_target_altitude(HOVER_ALTITUDE)
+                        node.set_desired_twist(
+                            hold_altitude_twist(node.current_altitude()))
+                        locked_track_id = None
+                        current_phase = PHASE_SEARCH
+                        continue
+
                     nav_decision = get_navigation_decision(best_candidate)
 
                     # Match the target's height instead of holding a fixed
@@ -1594,8 +1677,21 @@ def main():
                     # how one detection of a wall filling the frame produced an
                     # instant "arrived" 3.2 m from the actual box. Require it to
                     # hold across consecutive frames instead.
+                    # Arrival is judged from how much of the frame the object
+                    # fills, which is only a proxy for being close to it, and a
+                    # measured run showed the proxy failing outright: arrival
+                    # fired 2 s after the drone said the target was 3.7 m away,
+                    # because the wall had grown into the frame. Geometry knows
+                    # better -- cross-check it. No opinion when the projection
+                    # fails, rather than blocking arrival forever.
                     if nav_decision.get("action") == "ARRIVED":
-                        arrived_frames += 1
+                        if tgt_dist is not None and tgt_dist > ARRIVAL_MAX_DISTANCE:
+                            if arrived_frames:
+                                log_event(f"VARIS reddedildi: kare doluyor ama hedef "
+                                          f"geometrik olarak {tgt_dist:.1f} m otede.")
+                            arrived_frames = 0
+                        else:
+                            arrived_frames += 1
                     else:
                         arrived_frames = 0
                     arrived = arrived_frames >= ARRIVAL_CONFIRM_FRAMES
