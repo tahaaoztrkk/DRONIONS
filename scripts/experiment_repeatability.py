@@ -30,6 +30,17 @@ enough in an earlier campaign that 65% of samples had no frame.
   scripts/experiment_repeatability.py            # 5 runs, survey mode
   scripts/experiment_repeatability.py -n 10
   scripts/experiment_repeatability.py --report   # re-score the existing CSV
+  scripts/experiment_repeatability.py --approach -n 10   # approach phase only
+
+--approach uses a stand-in for the VLM: the best size-plausible candidate is
+accepted and the run proceeds through centring and the approach. Identification
+is meaningless in that mode -- it will accept a distractor -- but everything
+after confirmation is exercised for free.
+
+That is the half that survey mode cannot reach, and the half where the failures
+are intermittent: flying into the wall, announcing arrival early, and losing a
+confirmation caught at the frame edge each happen on some runs and not others.
+A single flight cannot tell a fix from a lucky roll.
 """
 from __future__ import annotations
 
@@ -47,6 +58,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 RUN_LOG = REPO / "logs" / "dronions_run.log"
 OUT_CSV = REPO / "logs" / "repeatability.csv"
+APPROACH_CSV = REPO / "logs" / "approach.csv"
 CHAIN = REPO / "scripts" / "run_sim_chain.sh"
 
 # Ground truth from Tools/simulation/gz/worlds/dronions_scenario.sdf. All static.
@@ -123,9 +135,57 @@ def split_runs(text):
     return runs
 
 
-def one_run(idx, total, timeout):
+APPROACH_EVENTS = {
+    "arrived":        ("HEDEFE VARILDI",        "vardi"),
+    "arrival_denied": ("VARIS reddedildi",      "erken varis reddi"),
+    "contact":        ("TEMAS RISKI",           "temas riski"),
+    "blocked":        ("Yaklasilamiyor",        "engel nedeniyle birakildi"),
+    "size_drop":      ("Takip birakildi",       "boyut nedeniyle birakildi"),
+    "center_fail":    ("Ortalama basarisiz",    "ortalama basarisiz"),
+    "lost":           ("Hedef kaybedildi",      "hedef kaybedildi"),
+    "strayed":        ("Arama alani disinda",   "alan disina cikti"),
+    "gave_up":        ("bulunamadı. Aradığım",  "pes etti"),
+}
+
+
+def parse_approach(lines, run_id):
+    """One run's log -> a row of approach-phase outcomes."""
+    row = {"run": run_id}
+    for key, (needle, _) in APPROACH_EVENTS.items():
+        row[key] = sum(1 for l in lines if needle in l)
+    handoffs = sum(1 for l in lines if "takibe geciliyor" in l)
+    row["handoffs"] = handoffs
+    return row
+
+
+def report_approach(rows):
+    if not rows:
+        print("Kosu yok.")
+        return
+    n = len(rows)
+    print(f"\n{'='*58}\n{n} kosu, yaklasma fazi\n{'='*58}")
+    print(f"  onaydan sonra takibe gecis : {sum(r['handoffs'] for r in rows)}")
+    print(f"  hedefe varis               : {sum(r['arrived'] for r in rows)}"
+          f"  ({sum(1 for r in rows if r['arrived'])}/{n} kosu)")
+    print()
+    for key, (_, label) in APPROACH_EVENTS.items():
+        if key == "arrived":
+            continue
+        total = sum(r[key] for r in rows)
+        runs_hit = sum(1 for r in rows if r[key])
+        flag = "  <-- " if key in ("contact",) and total else ""
+        print(f"  {label:28}: {total:3} olay, {runs_hit}/{n} kosu{flag}")
+
+
+def one_run(idx, total, timeout, approach=False):
     env = dict(os.environ, HEADLESS="1", DRONIONS_TARGET=TARGET,
-               COMMAND_DELAY="45", DRONIONS_NO_VLM="1")
+               COMMAND_DELAY="45")
+    if approach:
+        env["DRONIONS_FAKE_VLM"] = "1"
+        env.pop("DRONIONS_NO_VLM", None)
+    else:
+        env["DRONIONS_NO_VLM"] = "1"
+        env.pop("DRONIONS_FAKE_VLM", None)
     env.pop("INTERACTIVE", None)
     before = RUN_LOG.stat().st_size if RUN_LOG.exists() else 0
     print(f"[{idx}/{total}] basliyor {datetime.now():%H:%M:%S} ...", flush=True)
@@ -145,6 +205,12 @@ def one_run(idx, total, timeout):
     if not runs:
         print(f"[{idx}/{total}] log bulunamadi")
         return []
+    if approach:
+        row = parse_approach(runs[-1], idx)
+        print(f"[{idx}/{total}] takibe gecis={row['handoffs']} varis={row['arrived']} "
+              f"temas={row['contact']} engel={row['blocked']} "
+              f"erken_varis_reddi={row['arrival_denied']}", flush=True)
+        return [row]
     rows = parse_survey(runs[-1], idx)
     tops = [r for r in rows if r["rank"] == 0]
     hits = [r for r in tops if int(r["is_box"])]
@@ -215,6 +281,8 @@ def main():
     ap.add_argument("-n", type=int, default=5)
     ap.add_argument("--timeout", type=int, default=420)
     ap.add_argument("--report", action="store_true")
+    ap.add_argument("--approach", action="store_true",
+                    help="VLM yerine boyut filtresini kullan, yaklasma fazini olc")
     a = ap.parse_args()
 
     if a.report:
@@ -224,19 +292,23 @@ def main():
             report(list(csv.DictReader(f)))
         return
 
-    fields = ["run", "t", "rank", "conf", "area", "world_x", "world_y",
-              "drone_x", "drone_y", "nearest", "box_err", "is_box"]
+    if a.approach:
+        fields = ["run", "handoffs"] + list(APPROACH_EVENTS)
+    else:
+        fields = ["run", "t", "rank", "conf", "area", "world_x", "world_y",
+                  "drone_x", "drone_y", "nearest", "box_err", "is_box"]
     all_rows = []
-    with open(OUT_CSV, "w", newline='', encoding='utf-8') as f:
+    out = APPROACH_CSV if a.approach else OUT_CSV
+    with open(out, "w", newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for i in range(1, a.n + 1):
-            rows = one_run(i, a.n, a.timeout)
+            rows = one_run(i, a.n, a.timeout, approach=a.approach)
             all_rows += rows
             w.writerows(rows)
             f.flush()          # Ctrl-C keeps what has run so far
-    print(f"\n-> {OUT_CSV}")
-    report(all_rows)
+    print(f"\n-> {out}")
+    (report_approach if a.approach else report)(all_rows)
 
 
 if __name__ == "__main__":

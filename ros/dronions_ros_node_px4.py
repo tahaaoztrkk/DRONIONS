@@ -85,6 +85,21 @@ from config import VOICE_ENABLED, USER_POSITION, USER_YAW
 # a day. Never a flight mode -- without the model there is nothing telling
 # *your* box from any box, which is the whole assistive premise.
 SURVEY = os.getenv("DRONIONS_NO_VLM", "") not in ("", "0")
+
+# Stand-in for the VLM: accept the best size-plausible candidate and carry on
+# through centring and the approach. Identification is meaningless here -- it
+# will happily accept a distractor -- but everything *after* confirmation is
+# exercised, for free, as many times as needed.
+#
+# This only became possible once the size gate could reject the wall. The
+# earlier attempt at a VLM-free end-to-end run accepted whatever ranked first,
+# which was the wall from the takeoff spot, and never got further.
+#
+# It exists because the failures in the approach are intermittent: flying into
+# the wall, announcing arrival early and losing an edge-of-frame confirmation
+# all happen on some runs and not others, so a single flight cannot show
+# whether a fix worked or the dice fell differently.
+FAKE_VLM = os.getenv("DRONIONS_FAKE_VLM", "") not in ("", "0")
 from assistant.command_parser import parse_command
 from assistant.agent import capture_and_analyze, select_candidate, answer_followup
 from assistant.dialogue import Dialogue
@@ -155,6 +170,12 @@ SEARCH_TIMEOUT_MARGIN = 1.6
 # diagnose it from -- only the moment tracking noticed, long afterwards.
 POSE_LOG_INTERVAL = 10.0        # s
 SIZE_LOG_INTERVAL = 20.0        # s
+
+# Lidar range at which the approach is judged to have come dangerously close.
+# The airframe sweeps 0.339 m either side, so a return at half a metre is
+# already within a body length of contact.
+CONTACT_RANGE = 0.5
+CONTACT_LOG_INTERVAL = 5.0      # s
 STRAY_REPORT_INTERVAL = 5.0     # s
 # Before abandoning a blocked waypoint, try going *over* the obstacle. This is
 # the quadrotor's one real advantage over the ground rig and nothing in the
@@ -982,6 +1003,7 @@ def main():
     vlm_errors = 0
     pose_log_after = 0.0
     size_log_after = 0.0
+    contact_log_after = 0.0
     size_rejected_total = 0
     stray_report_after = 0.0
     locked_track_id = None
@@ -1234,7 +1256,10 @@ def main():
                     # location produced a left-edge coordinate on all six calls
                     # measured (x=0.01-0.03) no matter where the object was, so
                     # the answer could not be matched to a detection at all.
-                    if SURVEY:
+                    if FAKE_VLM:
+                        result = {"found": True, "index": 0,
+                                  "message": "[SAHTE-VLM] boyutu uygun ilk aday kabul edildi"}
+                    elif SURVEY:
                         # Record what the detector ranked, and carry on flying.
                         #
                         # Auto-accepting YOLO's best candidate instead was the
@@ -1662,6 +1687,17 @@ def main():
                         locked_track_id = None
                         current_phase = PHASE_SEARCH
                         continue
+
+                    # Record how close the approach actually came to something
+                    # solid. The wall strike that motivated the check above left
+                    # no trace in the log at all -- it was only known because it
+                    # was watched happening -- so a failure that appears on some
+                    # runs and not others could not be counted.
+                    if node.min_range() < CONTACT_RANGE and time.time() > contact_log_after:
+                        log_event(f"TEMAS RISKI: takip sirasinda {node.min_range():.2f} m "
+                                  f"onde engel (govde yari genisligi "
+                                  f"{AIRFRAME_HALF_WIDTH:.2f} m).")
+                        contact_log_after = time.time() + CONTACT_LOG_INTERVAL
 
                     nav_decision = get_navigation_decision(best_candidate)
 
