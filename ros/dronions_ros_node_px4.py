@@ -183,6 +183,11 @@ SIZE_LOG_INTERVAL = 20.0        # s
 # already within a body length of contact.
 CONTACT_RANGE = 0.5
 CONTACT_LOG_INTERVAL = 5.0      # s
+
+# How long to stop confirming targets after abandoning an approach for an
+# obstacle, so the sweep carries the drone to a different vantage instead of
+# re-locking the same blocked line.
+OBSTACLE_RETRY_COOLDOWN = 25.0  # s
 STRAY_REPORT_INTERVAL = 5.0     # s
 # Before abandoning a blocked waypoint, try going *over* the obstacle. This is
 # the quadrotor's one real advantage over the ground rig and nothing in the
@@ -1703,6 +1708,18 @@ def main():
                     # onto the wall, which then filled the frame and read as
                     # arrival 2 s after the drone had been told the target was
                     # 3.7 m away.
+                    # Logged first, before anything can `continue` past it. It
+                    # was placed after the abort, which skipped it exactly when
+                    # it mattered: a run closed to 0.30 m of the wall -- inside
+                    # the airframe's own half-width -- and the campaign still
+                    # reported zero contact risk, because the abort fired and
+                    # jumped over the recording.
+                    if node.min_range() < CONTACT_RANGE and time.time() > contact_log_after:
+                        log_event(f"TEMAS RISKI: takip sirasinda {node.min_range():.2f} m "
+                                  f"onde engel (govde yari genisligi "
+                                  f"{AIRFRAME_HALF_WIDTH:.2f} m).")
+                        contact_log_after = time.time() + CONTACT_LOG_INTERVAL
+
                     if target and not size_plausible(best_candidate, node.pose_xyz(),
                                                      node.orientation(), target):
                         iw = implied_width(best_candidate, node.pose_xyz(),
@@ -1741,19 +1758,18 @@ def main():
                         node.set_desired_twist(
                             hold_altitude_twist(node.current_altitude()))
                         locked_track_id = None
+                        # Hold off on re-confirming for a while. Without this the
+                        # drone aborts, returns to searching, re-acquires the
+                        # same target from the same side seconds later and walks
+                        # into the same wall: measured three times in one run,
+                        # closing to 1.0 m, then 0.8 m, then 0.30 m. It escaped
+                        # only when the sweep eventually offered a view from the
+                        # far side. The cooldown forces that to happen on
+                        # purpose rather than by luck.
+                        last_vlm_check_time = (time.time() + OBSTACLE_RETRY_COOLDOWN
+                                               - VLM_CHECK_INTERVAL)
                         current_phase = PHASE_SEARCH
                         continue
-
-                    # Record how close the approach actually came to something
-                    # solid. The wall strike that motivated the check above left
-                    # no trace in the log at all -- it was only known because it
-                    # was watched happening -- so a failure that appears on some
-                    # runs and not others could not be counted.
-                    if node.min_range() < CONTACT_RANGE and time.time() > contact_log_after:
-                        log_event(f"TEMAS RISKI: takip sirasinda {node.min_range():.2f} m "
-                                  f"onde engel (govde yari genisligi "
-                                  f"{AIRFRAME_HALF_WIDTH:.2f} m).")
-                        contact_log_after = time.time() + CONTACT_LOG_INTERVAL
 
                     nav_decision = get_navigation_decision(best_candidate)
 
