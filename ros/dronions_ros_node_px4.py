@@ -117,6 +117,7 @@ from utils.prompts import get_prompts
 
 from perception.detector import YOLOWorldDetector
 from perception.filters import filter_candidates
+from perception.appearance import colour_plausible, reference_signature, colour_signature
 from perception.tracker import Tracker
 from navigation.navigator import get_navigation_decision
 from navigation.spatial import (locate_target, describe_target,
@@ -1060,6 +1061,7 @@ def main():
     size_log_after = 0.0
     contact_log_after = 0.0
     pose_stale = False
+    ref_colour = None
     size_rejected_total = 0
     stray_report_after = 0.0
     locked_track_id = None
@@ -1114,6 +1116,15 @@ def main():
                     # Arm YOLO now, not at the hand-off to tracking: it is
                     # the screening layer during the search from here on.
                     detector.set_target(target)
+                    # Colour signature of the memory-bank photo, computed once
+                    # per target rather than per frame.
+                    ref_colour = reference_signature(ref_path_for(target))
+                    if ref_colour:
+                        log_event(f"Referans rengi: ton {ref_colour[0]:.0f} derece, "
+                                  f"doygunluk {ref_colour[1]:.0f}")
+                    else:
+                        log_event(f"'{target}' icin kullanilabilir referans rengi yok "
+                                  f"-- renk elemesi devre disi.")
                     # A target with no entry in the prompt database falls back
                     # to itself, and YOLO-World is markedly weaker on one
                     # phrasing than on four. That degradation used to be
@@ -1292,8 +1303,14 @@ def main():
                 # offline against any future campaign.
                 if target and not SURVEY:
                     dpos, dquat = node.pose_xyz(), node.orientation()
+                    # Size, then colour. Size removes what cannot be the right
+                    # object; colour removes what is the right size but the
+                    # wrong thing -- the blue box and the green sphere are both
+                    # within a few centimetres of the target's dimensions, and
+                    # between them they took four of nine locks in a campaign.
                     kept = [c for c in search_candidates
-                            if size_plausible(c, dpos, dquat, target)]
+                            if size_plausible(c, dpos, dquat, target)
+                            and colour_plausible(frame, c, ref_colour)]
                     if len(kept) != len(search_candidates):
                         size_rejected_total += len(search_candidates) - len(kept)
                         # Rate-limited rather than once-only: how often this
@@ -1351,11 +1368,18 @@ def main():
                             w = locate_target(c, node.pose_xyz(),
                                               node.orientation(), target=target)
                             iw = implied_width(c, node.pose_xyz(), node.orientation())
+                            # Hue is recorded so the colour threshold can be set
+                            # from rendered detections the way the size bound
+                            # was, instead of from the reference photo alone.
+                            csig = colour_signature(
+                                frame[max(0, int(c.bbox[1])):int(c.bbox[3]),
+                                      max(0, int(c.bbox[0])):int(c.bbox[2])])
                             dx, dy, _ = node.pose_xyz()
                             log_event(
                                 f"ANKET r={rank} conf={c.confidence:.3f} "
                                 f"alan={c.relative_area:.4f} "
                                 f"genislik={f'{iw:.2f}' if iw else 'yok'} "
+                                f"ton={f'{csig[0]:.0f}' if csig else 'yok'} "
                                 f"dunya={f'{w[0]:.2f},{w[1]:.2f}' if w else 'yok'} "
                                 f"drone={dx:.2f},{dy:.2f}")
                         last_vlm_check_time = current_time
