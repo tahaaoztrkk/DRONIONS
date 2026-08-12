@@ -176,6 +176,9 @@ SEARCH_TIMEOUT_MARGIN = 1.6
 # trace at all, so a nineteen-metre excursion left nothing in the log to
 # diagnose it from -- only the moment tracking noticed, long afterwards.
 POSE_LOG_INTERVAL = 10.0        # s
+# Age at which the position estimate stops being usable. Poses arrive at tens
+# of hertz, so a second of silence is already a fault, not jitter.
+POSE_STALE_SECONDS = 2.0
 SIZE_LOG_INTERVAL = 20.0        # s
 
 # Lidar range at which the approach is judged to have come dangerously close.
@@ -550,6 +553,7 @@ class DronionsRosNodePX4(Node):
         # "PositionTargetGlobal failed because no origin" warning, and leaves
         # the position estimate free to jump once the origin finally latches.
         self._pose_count = 0
+        self._last_pose_time = 0.0
         self._has_global_origin = False
 
         # PX4 drops OFFBOARD if the setpoint stream stalls for more than a
@@ -656,6 +660,7 @@ class DronionsRosNodePX4(Node):
         self._yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         self._pose_count += 1
+        self._last_pose_time = time.time()
 
     def horizontal_pose(self):
         """(x, y, yaw) in the local ENU frame, for the search leash."""
@@ -675,6 +680,21 @@ class DronionsRosNodePX4(Node):
 
     def ekf_ready(self) -> bool:
         return self._pose_count >= 20 and self._has_global_origin
+
+    def pose_age(self) -> float:
+        """Seconds since the last position message, or inf if none ever came.
+
+        Every decision the node makes about where it is comes from this one
+        stream, and a run showed what happens when it stops: the reported
+        position ran to (-34.1, 40.6) -- fifty metres out for a vehicle moving
+        at 0.25 m/s -- and then froze at that exact value for five minutes
+        while the drone went on being commanded back to an area it had never
+        left. A stale estimate is indistinguishable from a still drone unless
+        the age is checked.
+        """
+        if not self._last_pose_time:
+            return float('inf')
+        return time.time() - self._last_pose_time
 
     def current_altitude(self) -> float:
         return self._z
@@ -1039,6 +1059,7 @@ def main():
     pose_log_after = 0.0
     size_log_after = 0.0
     contact_log_after = 0.0
+    pose_stale = False
     size_rejected_total = 0
     stray_report_after = 0.0
     locked_track_id = None
@@ -1135,6 +1156,25 @@ def main():
                     dialogue.say(reply)
             except queue.Empty:
                 pass
+
+            # Nothing below can be trusted without a live position. Measured:
+            # the estimate ran to (-34.1, 40.6) and then froze there to the
+            # centimetre for five minutes, and the node spent all of it flying
+            # a drone it believed was fifty metres away back to an area it had
+            # never left. A frozen estimate looks exactly like a stationary
+            # drone, so only its age tells them apart.
+            if node.pose_age() > POSE_STALE_SECONDS:
+                if not pose_stale:
+                    pose_stale = True
+                    log_event(f"Konum akisi durdu ({node.pose_age():.0f} s). "
+                              f"Havada bekleniyor -- konuma dayali her sey askida.")
+                    dialogue.say("Konumumu kaybettim, olduğum yerde bekliyorum.")
+                node.set_desired_twist(hold_altitude_twist(node.current_altitude()))
+                time.sleep(0.1)
+                continue
+            if pose_stale:
+                pose_stale = False
+                log_event("Konum akisi geri geldi.")
 
             if current_phase == PHASE_SEARCH:
                 # A search that never ends is not an answer anyone can act on.
