@@ -50,6 +50,7 @@ import os
 import sys
 import threading
 import queue
+from collections import deque
 import time
 import math
 import random
@@ -180,6 +181,15 @@ POSE_LOG_INTERVAL = 10.0        # s
 # Age at which the position estimate stops being usable. Poses arrive at tens
 # of hertz, so a second of silence is already a fault, not jitter.
 POSE_STALE_SECONDS = 2.0
+# Fastest step between consecutive position messages that is still believable.
+# Cruise is 0.25 m/s and the airframe is not capable of anything near this;
+# it is set well above any real motion so only estimator jumps trip it.
+MAX_POSE_SPEED = 3.0            # m/s
+# Sustained speed over a window, for divergence that ramps instead of stepping.
+# Cruise is 0.25 m/s horizontally and roughly 0.5 m/s vertically, so 1.0 m/s
+# leaves room for both together and still sits far below any observed drift.
+MAX_SUSTAINED_SPEED = 1.0       # m/s
+POSE_SPEED_WINDOW = 3.0         # s
 SIZE_LOG_INTERVAL = 20.0        # s
 
 # Lidar range at which the approach is judged to have come dangerously close.
@@ -555,6 +565,8 @@ class DronionsRosNodePX4(Node):
         # the position estimate free to jump once the origin finally latches.
         self._pose_count = 0
         self._last_pose_time = 0.0
+        self._pose_jump = None      # (metres, seconds) of the first bad step
+        self._pose_track = deque()  # recent (t, x, y, z) for the sustained check
         self._has_global_origin = False
 
         # PX4 drops OFFBOARD if the setpoint stream stalls for more than a
@@ -660,8 +672,39 @@ class DronionsRosNodePX4(Node):
         self._quat = (q.x, q.y, q.z, q.w)
         self._yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        # Reject the estimate outright once it moves faster than the airframe
+        # can. Staleness was guarded first and turned out to be only half the
+        # fault: in three runs of ten the pose kept arriving and kept changing,
+        # but had stepped 37 m in nine seconds -- for a vehicle commanded at
+        # 0.25 m/s -- and then drifted on plausibly from the wrong place. A
+        # fresh, moving, wrong estimate looks entirely healthy unless the step
+        # size is checked.
+        now = time.time()
+        if self._last_pose_time and self._pose_jump is None:
+            dt = now - self._last_pose_time
+            step = math.dist((msg.pose.position.x, msg.pose.position.y,
+                              msg.pose.position.z), (self._x, self._y, self._z))
+            if dt > 1e-3 and step / dt > MAX_POSE_SPEED:
+                self._pose_jump = (step, dt)
+
+        # A jump between consecutive messages is the obvious failure; a ramp is
+        # the one that slips through. One diverged run drifted 31 m over 19 s
+        # -- 1.65 m/s sustained, under any per-message bound, and still far
+        # beyond what a vehicle cruising at 0.25 m/s can do. Displacement over
+        # a window catches the shape the instantaneous check cannot.
+        p = (now, msg.pose.position.x, msg.pose.position.y, msg.pose.position.z)
+        self._pose_track.append(p)
+        while self._pose_track and now - self._pose_track[0][0] > POSE_SPEED_WINDOW:
+            self._pose_track.popleft()
+        if self._pose_jump is None and len(self._pose_track) > 1:
+            t0, x0, y0, z0 = self._pose_track[0]
+            span = now - t0
+            if span >= POSE_SPEED_WINDOW * 0.5:
+                moved = math.dist((p[1], p[2], p[3]), (x0, y0, z0))
+                if moved / span > MAX_SUSTAINED_SPEED:
+                    self._pose_jump = (moved, span)
         self._pose_count += 1
-        self._last_pose_time = time.time()
+        self._last_pose_time = now
 
     def horizontal_pose(self):
         """(x, y, yaw) in the local ENU frame, for the search leash."""
@@ -681,6 +724,15 @@ class DronionsRosNodePX4(Node):
 
     def ekf_ready(self) -> bool:
         return self._pose_count >= 20 and self._has_global_origin
+
+    def pose_jump(self):
+        """(metres, seconds) of the step that broke trust, or None.
+
+        Latched rather than momentary: the estimator does not recover on its
+        own -- it carries on from wherever it landed -- so once the frame has
+        moved under the drone, nothing downstream can be trusted again.
+        """
+        return self._pose_jump
 
     def pose_age(self) -> float:
         """Seconds since the last position message, or inf if none ever came.
@@ -1061,6 +1113,7 @@ def main():
     size_log_after = 0.0
     contact_log_after = 0.0
     pose_stale = False
+    pose_broken = False
     ref_colour = None
     size_rejected_total = 0
     stray_report_after = 0.0
@@ -1174,6 +1227,28 @@ def main():
             # a drone it believed was fifty metres away back to an area it had
             # never left. A frozen estimate looks exactly like a stationary
             # drone, so only its age tells them apart.
+            # A jump is worse than silence: the estimate keeps arriving and
+            # keeps moving, so nothing looks wrong, while every position the
+            # node computes -- the target's, the search area's, its own -- is
+            # measured from an origin that has shifted underneath it. Measured
+            # in three runs of ten, each of which then spent five minutes
+            # flying a drone it believed was forty metres away.
+            jump = node.pose_jump()
+            if jump and not pose_broken:
+                pose_broken = True
+                log_event(f"Konum kestirimi bozuldu: {jump[0]:.1f} m adim "
+                          f"{jump[1]:.2f} s icinde ({jump[0]/jump[1]:.1f} m/s). "
+                          f"Arama durduruluyor.")
+                dialogue.abort("Konumumu güvenilir şekilde bilemiyorum, "
+                               "aramayı durduruyorum. Sistemi yeniden "
+                               "başlatmak gerekiyor.")
+                target = None
+                node.set_target_altitude(HOVER_ALTITUDE)
+            if pose_broken:
+                node.set_desired_twist(hold_altitude_twist(node.current_altitude()))
+                time.sleep(0.1)
+                continue
+
             if node.pose_age() > POSE_STALE_SECONDS:
                 if not pose_stale:
                     pose_stale = True

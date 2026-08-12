@@ -154,6 +154,11 @@ APPROACH_EVENTS = {
     "lost":           ("Hedef kaybedildi",      "hedef kaybedildi"),
     "strayed":        ("Arama alani disinda",   "alan disina cikti"),
     "gave_up":        ("bulunamadı. Aradığım",  "pes etti"),
+    # Kept separate from every other outcome: a run whose position estimate
+    # broke measured nothing about the search, and counting it as a search
+    # failure is how three instrument faults looked like a colour-filter
+    # regression.
+    "pose_broken":    ("Konum kestirimi bozuldu", "KONUM KESTIRIMI BOZULDU"),
 }
 
 
@@ -210,8 +215,15 @@ def report_approach(rows):
     n = len(rows)
     print(f"\n{'='*58}\n{n} kosu, yaklasma fazi\n{'='*58}")
     print(f"  onaydan sonra takibe gecis : {sum(r['handoffs'] for r in rows)}")
-    print(f"  hedefe varis               : {sum(r['arrived'] for r in rows)}"
-          f"  ({sum(1 for r in rows if r['arrived'])}/{n} kosu)")
+    broken = sum(1 for r in rows if int(r.get("pose_broken", 0)))
+    good = n - broken
+    print(f"  hedefe varis               : {sum(int(r['arrived']) for r in rows)}"
+          f"  ({sum(1 for r in rows if int(r['arrived']))}/{n} kosu)")
+    if broken:
+        print(f"  !! {broken}/{n} kosuda konum kestirimi bozuldu -- o kosular "
+              f"aramayi olcmez.")
+        print(f"     saglikli kosularda varis: "
+              f"{sum(1 for r in rows if int(r['arrived']))}/{good}")
     print()
     for key, (_, label) in APPROACH_EVENTS.items():
         if key == "arrived":
