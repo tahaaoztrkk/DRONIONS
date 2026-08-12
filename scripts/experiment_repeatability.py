@@ -79,9 +79,16 @@ HIT_RADIUS = 1.0
 TARGET = "box"
 
 _TS = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]')
+# Fields are matched by name with anything allowed between them, because the
+# line has gained columns twice (implied width, then hue) and a positional
+# pattern silently matches nothing when that happens -- which reads exactly
+# like a campaign that collected no data.
 _SURVEY = re.compile(
-    r'ANKET r=(\d+) conf=([\d.]+) alan=([\d.]+) '
-    r'dunya=(-?[\d.]+),(-?[\d.]+) drone=(-?[\d.]+),(-?[\d.]+)')
+    r'ANKET r=(?P<rank>\d+).*?conf=(?P<conf>[\d.]+).*?alan=(?P<area>[\d.]+)'
+    r'.*?dunya=(?P<wx>-?[\d.]+),(?P<wy>-?[\d.]+)'
+    r'.*?drone=(?P<dx>-?[\d.]+),(?P<dy>-?[\d.]+)')
+_SURVEY_WIDTH = re.compile(r'genislik=(-?[\d.]+)')
+_SURVEY_HUE = re.compile(r'ton=(-?[\d.]+)')
 
 
 def _t(line):
@@ -107,17 +114,19 @@ def parse_survey(lines, run_id):
         m = _SURVEY.search(l)
         if not m or t0 is None:
             continue
-        rank, conf, area, wx, wy, dx, dy = (
-            int(m.group(1)), float(m.group(2)), float(m.group(3)),
-            float(m.group(4)), float(m.group(5)),
-            float(m.group(6)), float(m.group(7)))
+        g = m.groupdict()
+        wx, wy = float(g["wx"]), float(g["wy"])
+        mw, mh = _SURVEY_WIDTH.search(l), _SURVEY_HUE.search(l)
         name, _, box_err = nearest_object(wx, wy)
         rows.append({
             "run": run_id,
             "t": f"{(_t(l) - t0).total_seconds():.0f}",
-            "rank": rank, "conf": f"{conf:.3f}", "area": f"{area:.4f}",
+            "rank": int(g["rank"]), "conf": f"{float(g['conf']):.3f}",
+            "area": f"{float(g['area']):.4f}",
+            "width": f"{float(mw.group(1)):.2f}" if mw else "",
+            "hue": f"{float(mh.group(1)):.0f}" if mh else "",
             "world_x": f"{wx:.2f}", "world_y": f"{wy:.2f}",
-            "drone_x": f"{dx:.2f}", "drone_y": f"{dy:.2f}",
+            "drone_x": f"{float(g['dx']):.2f}", "drone_y": f"{float(g['dy']):.2f}",
             "nearest": name, "box_err": f"{box_err:.2f}",
             "is_box": int(box_err <= HIT_RADIUS),
         })
@@ -339,6 +348,33 @@ def report(rows):
         print(f"\n  kosular arasi dagilim  : "
               + " ".join(f"{100*p:.0f}%" for p in per_run))
 
+    # Hue, so the colour gate's threshold can be set from rendered detections
+    # rather than from the reference photo and the world's material
+    # definitions -- the same way the size bound was derived from measured
+    # widths instead of guessed at.
+    hued = [r for r in rows if r.get("hue")]
+    if hued:
+        print("\n  --- ton dagilimi (renk kapisi icin) ---")
+        by = {}
+        for r in hued:
+            by.setdefault("box" if int(r["is_box"]) else r["nearest"], []).append(
+                float(r["hue"]))
+        for name, vals in sorted(by.items(), key=lambda kv: -len(kv[1])):
+            vals.sort()
+            print(f"    {name:9} n={len(vals):3}  medyan {statistics.median(vals):5.0f} "
+                  f"derece  [{vals[0]:.0f} - {vals[-1]:.0f}]")
+        ref = by.get("box")
+        if ref:
+            rm = statistics.median(ref)
+            print(f"    referans olarak kutu medyani {rm:.0f} derece alinirsa:")
+            for name, vals in sorted(by.items()):
+                if name == "box":
+                    continue
+                far = sum(1 for v in vals
+                          if abs((v - rm + 180) % 360 - 180) > 45)
+                print(f"      {name:9}: {far}/{len(vals)} tanesi 45 derece disinda "
+                      f"-> elenirdi")
+
     box = [r for r in rows if int(r["is_box"])]
     wall = [r for r in rows if r["nearest"] == "wall"]
     if box and wall:
@@ -368,8 +404,9 @@ def main():
         fields = (["run", "handoffs"] + list(APPROACH_EVENTS)
                   + ["locked", "tgt_x", "tgt_y", "drone_x", "drone_y", "wall_gap"])
     else:
-        fields = ["run", "t", "rank", "conf", "area", "world_x", "world_y",
-                  "drone_x", "drone_y", "nearest", "box_err", "is_box"]
+        fields = ["run", "t", "rank", "conf", "area", "width", "hue",
+                  "world_x", "world_y", "drone_x", "drone_y",
+                  "nearest", "box_err", "is_box"]
     all_rows = []
     out = APPROACH_CSV if a.approach else OUT_CSV
     with open(out, "w", newline='', encoding='utf-8') as f:

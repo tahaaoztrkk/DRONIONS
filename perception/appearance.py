@@ -27,9 +27,22 @@ import cv2
 import numpy as np
 
 # How far the hue may differ from the reference before a candidate is rejected.
-# Generous: sim lighting shifts hue noticeably across the scene, and the point
-# is to exclude a different colour, not to grade a match.
-MAX_HUE_DEGREES = 45.0
+#
+# Measured over 118 detections from five survey flights, not reasoned about.
+# Rendered hues fall into two clusters: 0 deg (the red wall, 75 detections) and
+# 39 deg (the tan box, 32). The reference photo sits at 43 deg, which puts the
+# wall exactly 43 deg away -- so anything from 5 to 42 deg behaves identically
+# (80% of box detections kept, 82% of the rest rejected) and 43 deg collapses
+# to rejecting 4%. The first guess here was 45 deg, one step past that cliff,
+# and did essentially nothing.
+#
+# 25 deg is the middle of the plateau rather than its edge, so lighting drift
+# has room to move a detection without changing the verdict.
+#
+# The 20% of box detections lost are mostly at hue 0, i.e. crops whose colour
+# is the wall's. Those are labelled "box" only because they project within a
+# metre of it, so rejecting them is likely correct rather than costly.
+MAX_HUE_DEGREES = 25.0
 
 # Pixels below these are treated as colourless and ignored when averaging.
 # Shadowed and washed-out pixels carry no reliable hue, and a bounding box is

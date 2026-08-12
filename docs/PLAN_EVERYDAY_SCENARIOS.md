@@ -367,6 +367,32 @@ campaigns; the implied width is logged per detection for exactly that.
 Not yet flight-tested: the threshold comes from recorded data, not from a run
 made with the gate active.
 
+### Colour: calibrated, and what it revealed about the distractors
+
+The size gate cannot touch objects that are the target's size, and the scenario
+has two. Colour was the obvious next filter, and calibrating it against 118
+rendered detections mattered more than building it.
+
+Rendered hues fall into two clusters: **0 deg** (the red wall, 75 detections)
+and **39 deg** (the tan box, 32). The memory-bank photo sits at 43 deg, which
+puts the wall exactly 43 deg away. Any threshold from 5 to 42 deg behaves
+identically -- 80% of box detections kept, 82% of the rest rejected -- and at
+43 deg it collapses to rejecting 4%. The value picked before seeing the data
+was 45 deg: one step past the cliff, doing essentially nothing. The threshold
+is now 25 deg, the middle of the plateau rather than its edge.
+
+The more useful finding is what survives the gate. Every detection it lets
+through that is *not* labelled box is labelled **blue_box, at hue 39** -- the
+box's own colour. Those are almost certainly the real box, labelled by nearest
+ground-truth object to a projected position carrying ~0.5 m of error, with the
+blue distractor only 1.6 m away.
+
+So the "distractor confusion" seen in the approach campaigns is at least partly
+a **localization artifact rather than a perception failure**, and the two were
+indistinguishable while classes were assigned geometrically. Worth carrying
+into any later claim about identification accuracy: scoring by projected
+position silently converts localization error into apparent misidentification.
+
 Secondary observations from the same runs: the box was seen at least once in
 4 of 5 runs (median 50 s, range 39–86 s), and one run never saw it at all. The
 wall is *more* confident than the box (median 0.233 vs 0.183) and 42× larger in
