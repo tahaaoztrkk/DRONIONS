@@ -154,11 +154,10 @@ APPROACH_EVENTS = {
     "lost":           ("Hedef kaybedildi",      "hedef kaybedildi"),
     "strayed":        ("Arama alani disinda",   "alan disina cikti"),
     "gave_up":        ("bulunamadı. Aradığım",  "pes etti"),
-    # Kept separate from every other outcome: a run whose position estimate
-    # broke measured nothing about the search, and counting it as a search
-    # failure is how three instrument faults looked like a colour-filter
-    # regression.
-    "pose_broken":    ("Konum kestirimi bozuldu", "KONUM KESTIRIMI BOZULDU"),
+    # Kept separate from every other outcome: a run that ended in a crash
+    # measured nothing about the search, and counting it as a search failure
+    # is how these looked like a colour-filter regression.
+    "pose_broken":    ("Ucus anomalisi",        "UCUS ANOMALISI (carpma)"),
 }
 
 
@@ -220,8 +219,8 @@ def report_approach(rows):
     print(f"  hedefe varis               : {sum(int(r['arrived']) for r in rows)}"
           f"  ({sum(1 for r in rows if int(r['arrived']))}/{n} kosu)")
     if broken:
-        print(f"  !! {broken}/{n} kosuda konum kestirimi bozuldu -- o kosular "
-              f"aramayi olcmez.")
+        print(f"  !! {broken}/{n} kosuda ucus anomalisi (muhtemelen carpma) -- "
+              f"o kosular aramayi olcmez.")
         print(f"     saglikli kosularda varis: "
               f"{sum(1 for r in rows if int(r['arrived']))}/{good}")
     print()

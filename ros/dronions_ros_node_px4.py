@@ -726,24 +726,25 @@ class DronionsRosNodePX4(Node):
         return self._pose_count >= 20 and self._has_global_origin
 
     def pose_jump(self):
-        """(metres, seconds) of the step that broke trust, or None.
+        """(metres, seconds) of motion the airframe cannot command, or None.
 
-        Latched rather than momentary: the estimator does not recover on its
-        own -- it carries on from wherever it landed -- so once the frame has
-        moved under the drone, nothing downstream can be trusted again.
+        Named for what it was first believed to be. Ground truth recorded
+        alongside a flight showed the estimate was accurate throughout and the
+        vehicle genuinely accelerated to 9.9 m/s and crashed, so this is a
+        crash detector. Latched, because a drone on the ground does not
+        recover by itself.
         """
         return self._pose_jump
 
     def pose_age(self) -> float:
         """Seconds since the last position message, or inf if none ever came.
 
-        Every decision the node makes about where it is comes from this one
-        stream, and a run showed what happens when it stops: the reported
-        position ran to (-34.1, 40.6) -- fifty metres out for a vehicle moving
-        at 0.25 m/s -- and then froze at that exact value for five minutes
-        while the drone went on being commanded back to an area it had never
-        left. A stale estimate is indistinguishable from a still drone unless
-        the age is checked.
+        Kept, but for a narrower reason than it was written for. The run that
+        prompted it reported (-34.1, 40.6) and then held that value for five
+        minutes, which was read as the stream freezing; ground truth later
+        showed the drone had crashed and come to rest there, so the position
+        was constant because the vehicle was. A genuinely dead stream is still
+        worth catching -- it just was not what that run was.
         """
         if not self._last_pose_time:
             return float('inf')
@@ -1227,21 +1228,27 @@ def main():
             # a drone it believed was fifty metres away back to an area it had
             # never left. A frozen estimate looks exactly like a stationary
             # drone, so only its age tells them apart.
-            # A jump is worse than silence: the estimate keeps arriving and
-            # keeps moving, so nothing looks wrong, while every position the
-            # node computes -- the target's, the search area's, its own -- is
-            # measured from an origin that has shifted underneath it. Measured
-            # in three runs of ten, each of which then spent five minutes
-            # flying a drone it believed was forty metres away.
+            # Motion the airframe cannot produce under its own commands.
+            #
+            # This was first read as the position estimate diverging, and that
+            # was wrong. Recording Gazebo's own pose alongside a flight settled
+            # it: at 14:39:17 the drone was at (1.31, -0.68, 2.01) flying the
+            # sweep at 0.25 m/s; half a second later it was doing 2.9 m/s, then
+            # 9.9 m/s, and it ended on the ground 27 m away. The estimate was
+            # right the whole time -- the vehicle really did go. It was 0.38 m
+            # from the wall when it started, and the airframe sweeps 0.339 m,
+            # so the propellers were four centimetres from it.
+            #
+            # So this detects a crash, not an instrument fault, and the
+            # difference matters to what the user is told.
             jump = node.pose_jump()
             if jump and not pose_broken:
                 pose_broken = True
-                log_event(f"Konum kestirimi bozuldu: {jump[0]:.1f} m adim "
-                          f"{jump[1]:.2f} s icinde ({jump[0]/jump[1]:.1f} m/s). "
-                          f"Arama durduruluyor.")
-                dialogue.abort("Konumumu güvenilir şekilde bilemiyorum, "
-                               "aramayı durduruyorum. Sistemi yeniden "
-                               "başlatmak gerekiyor.")
+                log_event(f"Ucus anomalisi: {jump[0]:.1f} m hareket "
+                          f"{jump[1]:.2f} s icinde ({jump[0]/jump[1]:.1f} m/s) -- "
+                          f"komut edilen hizin cok ustunde. Arama durduruluyor.")
+                dialogue.abort("Kontrolü kaybettim, bir yere çarpmış olabilirim. "
+                               "Aramayı durduruyorum.")
                 target = None
                 node.set_target_altitude(HOVER_ALTITUDE)
             if pose_broken:
