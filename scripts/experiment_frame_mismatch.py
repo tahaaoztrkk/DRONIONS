@@ -310,10 +310,23 @@ def main():
                     reason = 'filtre eledi'
                 elif not cands:
                     reason = 'boyut kapisi eledi'
+                # Take the best candidate that actually yields a usable
+                # estimate, not simply the most confident one. Confidence
+                # alone hands over the wall in 71% of surveyed viewpoints, and
+                # a wall's ray is shallow enough that the range guard kills it
+                # -- at which point size_plausible has no width to judge and
+                # abstains, so the bad candidate passes the gate and dies at
+                # projection instead. Ten viewpoints in a row declined that
+                # way. Checking whether the geometry closes is information the
+                # system genuinely has, and using it is the same thing the
+                # flight pipeline does when it asks the model to choose.
+                est = None
+                for cand in cands:
+                    est = locate_target(cand, drone_xyz, quat, plane_z=0.0)
+                    if est:
+                        cands = [cand] + [c for c in cands if c is not cand]
+                        break
                 if cands:
-                    est = locate_target(cands[0], drone_xyz,
-                                        (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
-                                        plane_z=0.0)
                     if est:
                         ed, eb = relative_to_user(est[:2], USER_POSITION, USER_YAW)
                         gd = abs(ed - true_d)
