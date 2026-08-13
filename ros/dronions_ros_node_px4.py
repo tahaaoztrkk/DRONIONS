@@ -219,6 +219,13 @@ HOVER_ALTITUDE = 2.0        # m
 ALT_HOLD_KP = 0.8
 ALT_HOLD_VZ_MAX = 0.6
 
+# Descent is refused below this clearance to whatever is underneath. The
+# airframe sits 0.05 m under base_link and the sensor reads from there, so
+# this leaves roughly half a metre of air between the props and whatever the
+# drone is standing over.
+MIN_GROUND_CLEARANCE = 0.6      # m
+CLEARANCE_LOG_INTERVAL = 5.0    # s
+
 # While tracking, the hold altitude stops being a fixed number and follows the
 # target's vertical position in frame. The camera is fixed and looks straight
 # ahead, so a ground-level object sinks out of the bottom of the frame as the
@@ -337,12 +344,26 @@ def ref_path_for(target):
     return None
 
 
-def compute_altitude_vz(current_z, target_z=HOVER_ALTITUDE):
+def compute_altitude_vz(current_z, target_z=HOVER_ALTITUDE, clearance=None):
     """P-controller for vertical velocity. Used both to hold hover altitude
-    during search/track and for the final approach of the takeoff climb."""
+    during search/track and for the final approach of the takeoff climb.
+
+    `clearance` is the distance to whatever is directly below. Descent is
+    refused when that is small, however much altitude there appears to be:
+    observed in flight, the drone climbed to 3.5 m to see past the 3 m wall,
+    spotted the target from up there, and descended straight into the top of
+    the wall it was still above. Altitude cannot distinguish those -- 3.5 m is
+    comfortable over the floor and a collision over the wall -- so the check
+    has to be against what is underneath, not against z.
+
+    Climbing is never blocked. Whatever is below, going up is away from it.
+    """
     error = target_z - current_z
     vz = ALT_HOLD_KP * error
-    return max(-ALT_HOLD_VZ_MAX, min(ALT_HOLD_VZ_MAX, vz))
+    vz = max(-ALT_HOLD_VZ_MAX, min(ALT_HOLD_VZ_MAX, vz))
+    if vz < 0 and clearance is not None and clearance < MIN_GROUND_CLEARANCE:
+        return 0.0
+    return vz
 
 
 def navdecision_to_twist(nav_decision, current_z):
@@ -552,6 +573,8 @@ class DronionsRosNodePX4(Node):
         self._frame = None
         self._lock = threading.Lock()
         self._min_range = float('inf')
+        self._ground_clearance = float('inf')
+        self._clearance_log_after = 0.0
         self._z = 0.0
         self._x = 0.0
         self._y = 0.0
@@ -599,6 +622,9 @@ class DronionsRosNodePX4(Node):
                                   self._on_statustext, qos_profile_sensor_data)
         self.create_subscription(NavSatFix, '/mavros/global_position/global',
                                   self._on_global, qos_profile_sensor_data)
+
+        self.create_subscription(LaserScan, '/scan_down', self._on_scan_down,
+                                 qos_profile_sensor_data)
 
         self.cmd_pub = self.create_publisher(Twist, '/mavros/setpoint_velocity/cmd_vel_unstamped', 10)
         self.mc_pub = self.create_publisher(ManualControl, '/mavros/manual_control/send', 10)
@@ -651,6 +677,21 @@ class DronionsRosNodePX4(Node):
             # drone is too close to avoid them.
             if abs(r * math.sin(angle)) < CORRIDOR_HALF_WIDTH:
                 self._blocked = True
+
+    def _on_scan_down(self, msg: LaserScan):
+        finite = [r for r in msg.ranges if math.isfinite(r)]
+        self._ground_clearance = min(finite) if finite else float('inf')
+
+    def ground_clearance(self) -> float:
+        """Distance to whatever is directly below, or inf if nothing is.
+
+        The forward fan says nothing about this, and the gap crashed flights:
+        the drone climbed to 3.5 m to see past the 3 m wall, spotted the
+        target, and descended onto the wall it was still above. Altitude alone
+        cannot tell those apart -- 3.5 m is comfortable over the floor and a
+        collision over the wall.
+        """
+        return self._ground_clearance
 
     def obstacle_ahead(self) -> bool:
         return self._blocked
@@ -794,7 +835,18 @@ class DronionsRosNodePX4(Node):
             # vz would be frozen at a stale value, and a frozen non-zero vz is
             # exactly what caused the uncommanded climb seen earlier. Reading
             # the live altitude each tick keeps the hold honest.
-            twist.linear.z = compute_altitude_vz(self._z, self._target_z)
+            want_vz = compute_altitude_vz(self._z, self._target_z)
+            twist.linear.z = compute_altitude_vz(self._z, self._target_z,
+                                                 self._ground_clearance)
+            # Rate-limited, and reported rather than silent: a drone that
+            # refuses to descend looks identical to one that has finished
+            # descending unless it says which.
+            if want_vz < 0 and twist.linear.z == 0.0:
+                now = time.time()
+                if now > self._clearance_log_after:
+                    self._clearance_log_after = now + CLEARANCE_LOG_INTERVAL
+                    log_event(f"Inis engellendi: altimda {self._ground_clearance:.2f} m "
+                              f"bosluk var (irtifa {self._z:.1f} m). Once ileri.")
             self.publish_twist(twist)
             time.sleep(period)
 

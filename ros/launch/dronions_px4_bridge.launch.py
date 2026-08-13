@@ -29,6 +29,11 @@ def _bridge(context, *args, **kwargs):
     cam = f'{base}/camera_link/sensor/camera/image'
     cam_info = f'{base}/camera_link/sensor/camera/camera_info'
     lidar = f'{base}/lidar_sensor_link/sensor/lidar/scan'
+    # Downward lidar. The forward fan cannot see what the drone is above, and
+    # that gap crashed flights: after climbing over the 3 m wall the drone
+    # descended toward a target it had just spotted and flew into the top of
+    # the wall it was still standing over.
+    lidar_down = f'{base}/lidar_down_link/sensor/lidar_down/scan'
 
     return [Node(
         package='ros_gz_bridge',
@@ -37,10 +42,12 @@ def _bridge(context, *args, **kwargs):
             f'{cam}@sensor_msgs/msg/Image@gz.msgs.Image',
             f'{cam_info}@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo',
             f'{lidar}@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
+            f'{lidar_down}@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
             '--ros-args',
             '-r', f'{cam}:=/camera/image_raw',
             '-r', f'{cam_info}:=/camera/camera_info',
             '-r', f'{lidar}:=/scan',
+            '-r', f'{lidar_down}:=/scan_down',
         ],
         output='screen',
     )]

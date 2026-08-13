@@ -165,6 +165,23 @@ Interaction for why that matters.
   computed: without it the user is told the wall's distance and has no way to
   doubt it.
 
+- **The forward lidar says nothing about what the drone is above.** Observed
+  in flight and confirmed against Gazebo's own pose: after climbing to 3.5 m to
+  see past the 3 m wall, the drone spotted the target from up there and
+  descended straight into the top of the wall it was still standing over.
+  Altitude cannot distinguish the two cases -- 3.5 m is comfortable over the
+  floor and a collision over the wall. `x500_dronions/model.sdf` now carries a
+  **second, downward lidar** (`lidar_down_link`, bridged to `/scan_down`), and
+  `compute_altitude_vz` refuses to descend below `MIN_GROUND_CLEARANCE`.
+  Climbing is never blocked -- whatever is underneath, up is away from it.
+- **Model edits live in the PX4 checkout, not this repo.** Both lidars and the
+  camera pitch are in
+  `~/PX4-Autopilot/Tools/simulation/gz/models/x500_dronions/model.sdf`, so they
+  are not covered by this repository's history. A fresh clone of PX4 needs them
+  re-applied. The file also contained a `--` inside an XML comment, which
+  Gazebo tolerates and every strict parser rejects; that is fixed, and worth
+  not reintroducing.
+
 ### Interaction
 
 - **Read the command queue in every phase.** Intake once sat inside the SEARCH
