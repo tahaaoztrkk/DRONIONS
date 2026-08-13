@@ -27,6 +27,7 @@ same facts the geometric method uses and asks it to do the reasoning.
 import argparse
 import csv
 import math
+from collections import Counter
 import os
 import re
 import subprocess
@@ -110,8 +111,31 @@ class Grab:
         self.img = cv2.cvtColor(a, cv2.COLOR_RGB2BGR) if m.encoding == 'rgb8' else a
 
 
-def fresh(node, g):
-    """The first frame after the teleport, and nothing more.
+def settled(pose, want_xy, timeout=2.0, tol=0.15):
+    """Wait until Gazebo reports the drone actually at the commanded spot.
+
+    The teleport is a service call and the physics step that applies it is not
+    instantaneous, so the frame arriving right after it can still have been
+    rendered from the previous viewpoint. That produced silent, run-to-run
+    variation in yield -- 16, then 25, then 22 usable samples from the same
+    code and the same scene -- because some viewpoints were scored against an
+    image of somewhere else.
+    """
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        p = pose.latest()
+        if p and math.hypot(p[0] - want_xy[0], p[1] - want_xy[1]) < tol:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def fresh(node, g, skip=2):
+    """The first frame after the teleport has taken effect.
+
+    `skip` frames are discarded first: the pose can be correct while the
+    renderer is still a frame or two behind it. At ~27 Hz that costs about
+    80 ms, and an unarmed airframe falls under three centimetres in that time.
 
     This used to keep spinning for twenty more cycles after the image arrived,
     which cost about two seconds -- and a teleported airframe is unarmed and
@@ -124,10 +148,13 @@ def fresh(node, g):
     under a centimetre of fall). The caller still reads the true pose at that
     instant rather than trusting the commanded one.
     """
-    g.img = None
-    t0 = time.time()
-    while g.img is None and time.time() - t0 < 6:
-        rclpy.spin_once(node, timeout_sec=0.05)
+    for _ in range(skip + 1):
+        g.img = None
+        t0 = time.time()
+        while g.img is None and time.time() - t0 < 6:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        if g.img is None:
+            return None
     return g.img
 
 
@@ -170,8 +197,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--no-llm', action='store_true',
                     help='geometry only; costs no API quota')
+    ap.add_argument('--repeat', type=int, default=1,
+                    help='supurmeyi N kez tekrarla ve ornekleri havuzla. '
+                         'Tek supurme yeterince kararli degil: ayni kod ve '
+                         'ayni sahne 17 ile 24 arasinda kapsama verdi. '
+                         'Geometrik kol bedava oldugu icin tekrar ucuz.')
     ap.add_argument('--limit', type=int, default=0,
-                    help='ilk N bakis acisi (kota bolmek icin)')
+                    help='N bakis acisi, esit aralikli (gunluk kotayi bolmek icin)')
     ap.add_argument('--model', default=GEMINI_MODEL,
                     help='free-tier quota is per model per day, so switching '
                          'model is the way to keep going once one is spent')
@@ -208,6 +240,9 @@ def main():
     print("-" * len(hdr))
 
     rows = []
+    sweeps = args.repeat if args.no_llm else 1
+    if sweeps > 1:
+        print(f"{sweeps} tekrar havuzlanacak\n")
     all_vps = [(b, r) for b in VIEW_BEARINGS for r in VIEW_RANGES]
     viewpoints = []
     for b, rng in all_vps:
@@ -216,92 +251,116 @@ def main():
         if not line_blocked(dxy, TARGET_XY):
             viewpoints.append((b, rng))
     blocked = len(all_vps) - len(viewpoints)
-    if args.limit:
-        viewpoints = viewpoints[:args.limit]
+    if args.limit and args.limit < len(viewpoints):
+        # Evenly spaced, not the first N. The list is ordered by bearing, so
+        # a prefix would spend the whole quota on one side of the target and
+        # measure nothing about the mismatch the experiment exists to sweep.
+        step = len(viewpoints) / args.limit
+        viewpoints = [viewpoints[int(i * step)] for i in range(args.limit)]
     print(f"{len(viewpoints)} bakis acisi "
           f"({len(VIEW_BEARINGS)} yon x {len(VIEW_RANGES)} menzil, "
           f"{blocked} tanesi duvar arkasinda kaldigi icin elendi)"
           + (f", ilk {args.limit} tanesi" if args.limit else "") + "\n")
 
-    for bearing, view_range in viewpoints:
-        a = math.radians(bearing)
-        dx, dy = view_range * math.cos(a), view_range * math.sin(a)
-        drone_xy = (TARGET_XY[0] + dx, TARGET_XY[1] + dy)
-        yaw = math.atan2(-dy, -dx)                 # face the target
-        mismatch = math.degrees(math.atan2(math.sin(yaw - USER_YAW),
-                                           math.cos(yaw - USER_YAW)))
-        teleport(drone_xy[0], drone_xy[1], VIEW_ALT, yaw)
-        img = fresh(node, g)
-        # Where the drone *is*, read at the moment the frame arrived, not
-        # where it was told to go. The two differ because the airframe is
-        # unarmed and falling; measured at 0.47 m by 0.3 s.
-        actual = pose.latest() if pose else None
-        drone_xyz = actual if actual else (*drone_xy, VIEW_ALT)
-        row = {'mismatch_deg': round(mismatch, 1),
-               'range_m': view_range,
-               'alt_cmd': VIEW_ALT,
-               'alt_actual': round(drone_xyz[2], 3) if actual else None,
-               'alt_drop': round(VIEW_ALT - drone_xyz[2], 3) if actual else None}
+    for sweep in range(sweeps):
+        for bearing, view_range in viewpoints:
+            a = math.radians(bearing)
+            dx, dy = view_range * math.cos(a), view_range * math.sin(a)
+            drone_xy = (TARGET_XY[0] + dx, TARGET_XY[1] + dy)
+            yaw = math.atan2(-dy, -dx)                 # face the target
+            mismatch = math.degrees(math.atan2(math.sin(yaw - USER_YAW),
+                                               math.cos(yaw - USER_YAW)))
+            teleport(drone_xy[0], drone_xy[1], VIEW_ALT, yaw)
+            settled(pose, drone_xy)
+            img = fresh(node, g)
+            # Where the drone *is*, read at the moment the frame arrived, not
+            # where it was told to go. The two differ because the airframe is
+            # unarmed and falling; measured at 0.47 m by 0.3 s.
+            actual = pose.latest() if pose else None
+            drone_xyz = actual if actual else (*drone_xy, VIEW_ALT)
+            row = {'mismatch_deg': round(mismatch, 1),
+                   'range_m': view_range,
+                   'alt_cmd': VIEW_ALT,
+                   'alt_actual': round(drone_xyz[2], 3) if actual else None,
+                   'alt_drop': round(VIEW_ALT - drone_xyz[2], 3) if actual else None}
 
-        # --- geometric ---
-        gd = gb = None
-        if img is not None:
-            cands = filter_candidates(det.detect(img))
-            # The same physical-size gate the flight pipeline runs. Without it
-            # this measures a system we no longer fly: the wall is the top
-            # candidate in 71% of surveyed viewpoints, and a wall detection
-            # scored as the box is what produced 170-190 degree errors here.
-            quat = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
-            cands = [c for c in cands
-                     if size_plausible(c, drone_xyz, quat, TARGET_NAME)]
-            if cands:
-                est = locate_target(cands[0], drone_xyz,
-                                    (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
-                                    plane_z=0.0)
-                if est:
-                    ed, eb = relative_to_user(est[:2], USER_POSITION, USER_YAW)
-                    gd = abs(ed - true_d)
-                    gb = abs(math.degrees(eb - true_b))
-                    row['geom_area'] = round(cands[0].relative_area, 4)
-        row['geom_dist_err'] = gd
-        row['geom_brg_err'] = gb
+            # --- geometric ---
+            gd = gb = None
+            reason = None
+            if img is None:
+                reason = 'kare yok'
+            else:
+                raw = det.detect(img)
+                cands = filter_candidates(raw)
+                # The same physical-size gate the flight pipeline runs. Without it
+                # this measures a system we no longer fly: the wall is the top
+                # candidate in 71% of surveyed viewpoints, and a wall detection
+                # scored as the box is what produced 170-190 degree errors here.
+                quat = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
+                n_raw, n_filt = len(raw), len(cands)
+                cands = [c for c in cands
+                         if size_plausible(c, drone_xyz, quat, TARGET_NAME)]
+                # Which stage lost the viewpoint, recorded per row. Sixteen of
+                # thirty-seven produced an answer and nothing said why the rest
+                # did not -- a yield that low changes what the experiment can
+                # claim, so it has to be attributable rather than guessed at.
+                if n_raw == 0:
+                    reason = 'tespit yok'
+                elif n_filt == 0:
+                    reason = 'filtre eledi'
+                elif not cands:
+                    reason = 'boyut kapisi eledi'
+                if cands:
+                    est = locate_target(cands[0], drone_xyz,
+                                        (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
+                                        plane_z=0.0)
+                    if est:
+                        ed, eb = relative_to_user(est[:2], USER_POSITION, USER_YAW)
+                        gd = abs(ed - true_d)
+                        gb = abs(math.degrees(eb - true_b))
+                        row['geom_area'] = round(cands[0].relative_area, 4)
+                    else:
+                        reason = 'isin yere ulasmadi'
+            row['geom_dist_err'] = gd
+            row['geom_brg_err'] = gb
+            row['geom_reason'] = reason
 
-        # --- llm arms ---
-        nd = nb = pd = pb = None
-        if client is not None and img is not None:
-            naive = (
-                f"You are the camera of an assistive drone helping a blind user "
-                f"find their {TARGET_NAME}. The user is standing at the drone's "
-                f"launch point, not visible in this image. Where is the "
-                f"{TARGET_NAME} relative to the user?\n{ANSWER_FORMAT}")
-            got, txt_n = ask_llm(client, img, naive, args.model)
-            if got:
-                nd = abs(got[0] - true_d)
-                nb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
+            # --- llm arms ---
+            nd = nb = pd = pb = None
+            if client is not None and img is not None:
+                naive = (
+                    f"You are the camera of an assistive drone helping a blind user "
+                    f"find their {TARGET_NAME}. The user is standing at the drone's "
+                    f"launch point, not visible in this image. Where is the "
+                    f"{TARGET_NAME} relative to the user?\n{ANSWER_FORMAT}")
+                got, txt_n = ask_llm(client, img, naive, args.model)
+                if got:
+                    nd = abs(got[0] - true_d)
+                    nb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
 
-            posed = (
-                f"You are the camera of an assistive drone helping a blind user "
-                f"find their {TARGET_NAME}.\n"
-                f"Scene facts (metres, x east / y north, angles CCW from +x):\n"
-                f"- drone is at ({drone_xy[0]:.2f}, {drone_xy[1]:.2f}), "
-                f"altitude {drone_xyz[2]:.1f}, facing {math.degrees(yaw):.0f} deg, "
-                f"camera pitched 20 deg down\n"
-                f"- user stands at ({USER_POSITION[0]:.2f}, {USER_POSITION[1]:.2f}), "
-                f"facing {math.degrees(USER_YAW):.0f} deg\n"
-                f"Using the image and these facts, where is the {TARGET_NAME} "
-                f"relative to the user?\n{ANSWER_FORMAT}")
-            got, txt_p = ask_llm(client, img, posed, args.model)
-            if got:
-                pd = abs(got[0] - true_d)
-                pb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
-        row.update(llm_naive_dist_err=nd, llm_naive_brg_err=nb,
-                   llm_posed_dist_err=pd, llm_posed_brg_err=pb)
-        rows.append(row)
+                posed = (
+                    f"You are the camera of an assistive drone helping a blind user "
+                    f"find their {TARGET_NAME}.\n"
+                    f"Scene facts (metres, x east / y north, angles CCW from +x):\n"
+                    f"- drone is at ({drone_xy[0]:.2f}, {drone_xy[1]:.2f}), "
+                    f"altitude {drone_xyz[2]:.1f}, facing {math.degrees(yaw):.0f} deg, "
+                    f"camera pitched 20 deg down\n"
+                    f"- user stands at ({USER_POSITION[0]:.2f}, {USER_POSITION[1]:.2f}), "
+                    f"facing {math.degrees(USER_YAW):.0f} deg\n"
+                    f"Using the image and these facts, where is the {TARGET_NAME} "
+                    f"relative to the user?\n{ANSWER_FORMAT}")
+                got, txt_p = ask_llm(client, img, posed, args.model)
+                if got:
+                    pd = abs(got[0] - true_d)
+                    pb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
+            row.update(llm_naive_dist_err=nd, llm_naive_brg_err=nb,
+                       llm_posed_dist_err=pd, llm_posed_brg_err=pb)
+            rows.append(row)
 
-        def f(v, w, unit=''):
-            return f"{v:{w}.1f}{unit}" if v is not None else f"{'--':>{w}}"
-        print(f"{mismatch:9.0f} | {f(gd,7)} {f(gb,7)} | "
-              f"{f(nd,8)} {f(nb,8)} | {f(pd,8)} {f(pb,8)}")
+            def f(v, w, unit=''):
+                return f"{v:{w}.1f}{unit}" if v is not None else f"{'--':>{w}}"
+            print(f"{mismatch:9.0f} | {f(gd,7)} {f(gb,7)} | "
+                  f"{f(nd,8)} {f(nb,8)} | {f(pd,8)} {f(pb,8)}")
 
     print("-" * len(hdr))
 
@@ -309,16 +368,35 @@ def main():
         vals = sorted(r[key] for r in rows if r.get(key) is not None)
         return vals[len(vals) // 2] if vals else None
 
+    # Coverage is reported alongside accuracy, because refusing to answer is a
+    # design decision here, not a shortfall. The geometric method declines when
+    # the ray is too shallow to trust -- a viewpoint it stays silent on is one
+    # where it would have had to invent a number for someone who cannot check
+    # it. A language model has no such notion and answers every time. Comparing
+    # only the accuracy of the answers given would flatter whichever arm is
+    # readier to guess, so both figures belong together.
+    total = len(rows)
     for name, dk, bk in (("geometric", 'geom_dist_err', 'geom_brg_err'),
                          ("llm naive", 'llm_naive_dist_err', 'llm_naive_brg_err'),
                          ("llm posed", 'llm_posed_dist_err', 'llm_posed_brg_err')):
         d, b = med(dk), med(bk)
         n = sum(1 for r in rows if r.get(dk) is not None)
+        cov = 100.0 * n / total if total else 0.0
         if d is None:
-            print(f"{name:>10}: no answers")
+            print(f"{name:>10}: cevap yok            "
+                  f"| kapsama {n:2}/{total} ({cov:3.0f}%)")
         else:
-            print(f"{name:>10}: median distance err {d:5.2f} m, "
-                  f"bearing err {b:5.1f} deg   (n={n}/{len(rows)})")
+            print(f"{name:>10}: mesafe {d:5.2f} m, yon {b:5.1f} derece "
+                  f"| kapsama {n:2}/{total} ({cov:3.0f}%)")
+
+    declined = Counter(r.get('geom_reason') for r in rows
+                       if r.get('geom_brg_err') is None and r.get('geom_reason'))
+    if declined:
+        print("\n  geometrik yontemin cevap vermedigi durumlar:")
+        for why, k in declined.most_common():
+            print(f"    {why:24}: {k}")
+        print("    (cevap vermemek tasarim geregi -- kontrol edemeyecek birine "
+              "uydurma sayi soylememek icin)")
 
     os.makedirs('logs', exist_ok=True)
     # Taken from the rows rather than hardcoded. The fixed list silently
