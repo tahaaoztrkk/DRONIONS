@@ -33,8 +33,15 @@ REPO = Path(__file__).resolve().parent.parent
 OUT_CSV = REPO / "logs" / "ground_truth.csv"
 RUN_LOG = REPO / "logs" / "dronions_run.log"
 
-MODEL = "x500_dronions"
+# Matched as a prefix. PX4 spawns the model with an instance suffix --
+# "x500_dronions_0", not "x500_dronions" -- and an exact-match filter silently
+# recorded nothing across four flights, producing empty files that looked
+# exactly like a logger killed too early.
+MODEL_PREFIX = "x500_dronions"
 SAMPLE_INTERVAL = 0.5           # s between recorded samples
+# If nothing matches for this long, say so and list what *was* seen. Silence
+# is the one thing a diagnostic tool must never do.
+QUIET_WARN_SECONDS = 15.0
 
 _NAME = re.compile(r'name:\s*"([^"]+)"')
 _X = re.compile(r'^\s*x:\s*(-?[\d.eE+-]+)')
@@ -57,23 +64,36 @@ def find_world() -> str:
              "(dynamic_pose/info degil, pose/info aranıyor)")
 
 
-def stream(world: str):
+def stream(world: str, out_path: Path = None):
+    out_path = out_path or OUT_CSV
     topic = f"/world/{world}/pose/info"
-    print(f"[gt] {topic} dinleniyor, {OUT_CSV} yaziliyor. Ctrl-C ile durur.")
+    print(f"[gt] {topic} dinleniyor, {out_path} yaziliyor. Ctrl-C ile durur.")
     proc = subprocess.Popen(["gz", "topic", "-e", "-t", topic],
                             stdout=subprocess.PIPE, text=True, bufsize=1)
     last_write = 0.0
     cur_name, pos = None, {}
-    with open(OUT_CSV, "w", newline='', encoding='utf-8') as f:
+    rows = 0
+    started = time.time()
+    warned = False
+    seen_names = set()
+    with open(out_path, "w", newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(["wall_clock", "x", "y", "z"])
+        f.flush()       # so an empty file means "saw nothing", not "was killed"
         try:
             for line in proc.stdout:
                 m = _NAME.search(line)
                 if m:
                     cur_name, pos = m.group(1), {}
+                    seen_names.add(cur_name)
                     continue
-                if cur_name != MODEL:
+                if not rows and not warned and \
+                        time.time() - started > QUIET_WARN_SECONDS:
+                    warned = True
+                    print(f"[gt] UYARI: {QUIET_WARN_SECONDS:.0f} s icinde "
+                          f"'{MODEL_PREFIX}*' ile eslesen poz yok. "
+                          f"Gorulen modeller: {sorted(seen_names)}")
+                if cur_name is None or not cur_name.startswith(MODEL_PREFIX):
                     continue
                 for key, rx in (("x", _X), ("y", _Y), ("z", _Z)):
                     mm = rx.match(line)
@@ -88,21 +108,26 @@ def stream(world: str):
                                     f"{pos['x']:.3f}", f"{pos['y']:.3f}",
                                     f"{pos['z']:.3f}"])
                         f.flush()
+                        rows += 1
                         last_write = now
                     cur_name, pos = None, {}
         except KeyboardInterrupt:
             pass
         finally:
             proc.terminate()
-    print(f"\n[gt] -> {OUT_CSV}")
+    print(f"\n[gt] -> {out_path} ({rows} satir)")
+    if not rows:
+        print(f"[gt] Hicbir poz kaydedilmedi. Gorulen modeller: "
+              f"{sorted(seen_names) or 'yok'}")
 
 
-def compare():
+def compare(path: Path = None):
     """Lay Gazebo truth next to what the node logged from MAVROS."""
-    if not OUT_CSV.exists():
-        sys.exit(f"{OUT_CSV} yok -- once kayit al.")
+    path = path or OUT_CSV
+    if not path.exists():
+        sys.exit(f"{path} yok -- once kayit al.")
     truth = {}
-    with open(OUT_CSV, newline='', encoding='utf-8') as f:
+    with open(path, newline='', encoding='utf-8') as f:
         for r in csv.DictReader(f):
             truth[r["wall_clock"]] = (float(r["x"]), float(r["y"]))
     if not truth:
@@ -138,11 +163,12 @@ def compare():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--compare", action="store_true")
+    ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args()
     if a.compare:
-        compare()
+        compare(a.out)
     else:
-        stream(find_world())
+        stream(find_world(), a.out)
 
 
 if __name__ == "__main__":
