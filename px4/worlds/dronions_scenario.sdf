@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DRONIONS scenario world for PX4 SITL: same boilerplate as the stock
+  default.sdf (physics/gravity/magnetic field/spherical coordinates -- all
+  needed for realistic flight/GPS, none of it was present in the ground-rig
+  world since a wheeled rig never needed GPS), plus the test scenario objects
+  ported from ros/worlds/dronions_diff_drive_camera.sdf: an opaque wall that
+  blocks line of sight, the real cardboard_box target, and two distractors
+  (a sphere and a same-shaped different-colored box). No <plugin> tags needed
+  here -- PX4's Tools/simulation/gz/server.config loads them globally for
+  every world.
+-->
+<sdf version="1.9">
+  <world name="dronions_scenario">
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+    <scene>
+      <grid>false</grid>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode/>
+            </friction>
+            <bounce/>
+            <contact/>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>500 500</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+        <pose>0 0 0 0 -0 0</pose>
+        <inertial>
+          <pose>0 0 0 0 -0 0</pose>
+          <mass>1</mass>
+          <inertia>
+            <ixx>1</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>1</iyy>
+            <iyz>0</iyz>
+            <izz>1</izz>
+          </inertia>
+        </inertial>
+        <enable_wind>false</enable_wind>
+      </link>
+      <pose>0 0 0 0 -0 0</pose>
+      <self_collide>false</self_collide>
+    </model>
+    <light name="sunUTC" type="directional">
+      <pose>0 0 500 0 -0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1</intensity>
+      <direction>0.001 0.625 -0.78</direction>
+      <diffuse>0.904 0.904 0.904 1</diffuse>
+      <specular>0.271 0.271 0.271 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <linear>0</linear>
+        <constant>1</constant>
+        <quadratic>0</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0</inner_angle>
+        <outer_angle>0</outer_angle>
+        <falloff>0</falloff>
+      </spot>
+    </light>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.397971057728974</latitude_deg>
+      <longitude_deg> 8.546163739800146</longitude_deg>
+      <elevation>0</elevation>
+    </spherical_coordinates>
+
+    <!-- === DRONIONS scenario objects (ported from the ground-rig world) === -->
+
+    <!-- Opaque wall standing between the spawn point and the box row.
+         Repositioned and raised for the quad: at the ported-over x=0 it sat
+         beside the route rather than across it (the straight line from spawn
+         to the box never touched it), and the ground rig's 1.5m was below the
+         2m hover anyway, so the quad cleared it twice over. x=1.75 puts it
+         squarely on the path and 3m is above hover height -- the box cannot
+         be seen over it, so the drone has to search its way around, which is
+         what actually exercises the lidar avoidance. -->
+    <model name="obstacle_wall">
+      <static>true</static>
+      <pose>1.75 1.5 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.2 4.0 3.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.2 4.0 3.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.15 0.15 1</ambient>
+            <diffuse>0.6 0.15 0.15 1</diffuse>
+            <specular>0.2 0.2 0.2 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Real target, same row-of-three layout as the ground-rig world:
+         blue box - real box - sphere, spaced 1.6m apart, parallel to the
+         wall, all at x=3.5. -->
+    <include>
+      <name>cardboard_box</name>
+      <pose>3.5 2.0 0.15 0 0 0</pose>
+      <uri>/opt/ros/jazzy/share/ros_gz_sim_demos/models/cardboard_box</uri>
+    </include>
+
+    <model name="distractor_sphere">
+      <static>true</static>
+      <pose>3.5 3.6 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <sphere><radius>0.3</radius></sphere>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <sphere><radius>0.3</radius></sphere>
+          </geometry>
+          <material>
+            <ambient>0 0.8 0.1 1</ambient>
+            <diffuse>0 0.8 0.1 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="distractor_box_blue">
+      <static>true</static>
+      <pose>3.5 0.4 0.15 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.5 0.4 0.3</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.5 0.4 0.3</size></box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.2 0.8 1</ambient>
+            <diffuse>0.1 0.2 0.8 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>
