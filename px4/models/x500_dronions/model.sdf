@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DRONIONS x500: the stock x500 base airframe with both a mono camera
+  (from x500_mono_cam) and a front-facing single-beam lidar (from
+  x500_lidar_front) merged on, composed the same way PX4's own model
+  variants do it — this is not a new sensor block written from scratch,
+  just the same two stock sensor models included together.
+-->
+<sdf version='1.9'>
+  <model name='x500_dronions'>
+    <include merge='true'>
+      <uri>x500</uri>
+    </include>
+
+    <!-- Camera (from x500_mono_cam), pitched 0.35 rad (~20 deg) down.
+         Stock mono_cam looks dead level, which is wrong for this task: the
+         targets sit on the ground, so from a 2 m hover they are below the
+         frame entirely (the drone had to wander before it saw anything), and
+         on approach they sank out of the bottom of the frame and tracking
+         collapsed. A downward tilt puts the ground ahead in view at hover
+         height and keeps a closing target framed. Both poses must match —
+         the include places the link, the joint fixes it to the airframe. -->
+    <include merge='true'>
+      <uri>model://mono_cam</uri>
+      <pose>.12 .03 .242 0 0.35 0</pose>
+    </include>
+    <joint name="CameraJoint" type="fixed">
+      <parent>base_link</parent>
+      <child>camera_link</child>
+      <pose relative_to="base_link">.12 .03 .242 0 0.35 0</pose>
+    </joint>
+
+    <!-- Front lidar (from x500_lidar_front) -->
+    <include merge='true'>
+      <uri>model://LW20</uri>
+      <pose relative_to="base_link">.15 0 .01 0 0 0</pose>
+    </include>
+    <joint name="lidar_model_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>lw20_link</child>
+      <pose relative_to="base_link">-0 0 0 0 0 0</pose>
+    </joint>
+    <link name="lidar_sensor_link">
+      <pose relative_to="base_link">0.3 0 0.01 0 0 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>0.00001</ixx>
+          <iyy>0.00001</iyy>
+          <izz>0.00001</izz>
+          <ixy>0.0</ixy>
+          <ixz>0.0</ixz>
+          <iyz>0.0</iyz>
+        </inertia>
+      </inertial>
+      <sensor name='lidar' type='gpu_lidar'>
+        <gz_frame_id>lidar_sensor_link</gz_frame_id>
+        <!-- Roll dropped from the stock LW20's 1.57: with its single ray a
+             90 deg roll about the boresight changed nothing, but it turns the
+             widened fan below on its side, sweeping up/down instead of
+             left/right. That is why every return came back .inf while the
+             drone circled a 3 m wall — it was scanning sky, not scenery. -->
+        <pose relative_to="base_link">.15 0 .01 0 0 0</pose>
+        <update_rate>50</update_rate>
+        <!-- Widened from the stock LW20's single 100 m ray to the same
+             forward fan the ground rig was tuned against (20 samples over
+             +/-0.35 rad, 6 m). A single ray only sees an obstacle dead ahead,
+             which makes obstacle_ahead() miss the 2.5 m wide wall unless the
+             nose happens to line up exactly — the ground rig's avoidance
+             tuning (OBSTACLE_SAFE_DISTANCE = 1.0 m) assumes the fan. -->
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>20</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.35</min_angle>
+              <max_angle>0.35</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>6.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </ray>
+        <always_on>1</always_on>
+        <visualize>true</visualize>
+      </sensor>
+    </link>
+    <joint name="lidar_sensor_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>lidar_sensor_link</child>
+    </joint>
+
+    <!-- Downward lidar. The forward fan cannot see what the drone is standing
+         over, and that gap crashed flights: after climbing to 3.5 m to look
+         past the 3 m wall, the drone would spot the target, begin descending
+         toward it while still above the wall, and fly into the top of it.
+         Nothing in the system could know — altitude alone says 3.5 m, which
+         is fine over the floor and a collision over the wall.
+
+         A fan rather than a single ray, because the airframe sweeps 0.339 m
+         either side and a centre ray misses a wall edge under a rotor. Nine
+         samples over +/-0.35 rad cover +/-0.36 m at one metre down, which is
+         the footprint that matters. -->
+    <link name="lidar_down_link">
+      <pose relative_to="base_link">0 0 -0.05 0 1.5708 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>0.00001</ixx><iyy>0.00001</iyy><izz>0.00001</izz>
+          <ixy>0.0</ixy><ixz>0.0</ixz><iyz>0.0</iyz>
+        </inertia>
+      </inertial>
+      <sensor name='lidar_down' type='gpu_lidar'>
+        <gz_frame_id>lidar_down_link</gz_frame_id>
+        <pose relative_to="base_link">0 0 -0.05 0 1.5708 0</pose>
+        <update_rate>50</update_rate>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>9</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.35</min_angle>
+              <max_angle>0.35</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>12.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </ray>
+        <always_on>1</always_on>
+        <visualize>true</visualize>
+      </sensor>
+    </link>
+    <joint name="lidar_down_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>lidar_down_link</child>
+    </joint>
+  </model>
+</sdf>

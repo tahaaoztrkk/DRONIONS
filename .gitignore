@@ -2,6 +2,12 @@ __pycache__/
 *.pyc
 logs/
 models/
+# ...but not the PX4 simulation model. "models/" was meant for YOLO weights and
+# silently swallowed px4/models/ too, so the drone's own model.sdf -- camera
+# pitch, both lidars -- was left untracked in a commit whose entire purpose was
+# to track it.
+!px4/models/
+!px4/models/**
 *.pt
 .env
 .venv/
