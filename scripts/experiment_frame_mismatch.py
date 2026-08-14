@@ -88,6 +88,34 @@ def line_blocked(a, b, samples=60):
 OUT_CSV = 'logs/frame_mismatch.csv'
 
 
+def out_path_for(model, no_llm):
+    """One file per model, so a multi-day arm accumulates instead of being
+    overwritten. The quota is 20 calls a day and the full arm needs 74, so
+    every batch has to add to the last -- a run that silently replaced the
+    previous day's work would be indistinguishable from one that collected
+    nothing."""
+    if no_llm:
+        return 'logs/frame_mismatch_geom.csv'
+    safe = re.sub(r'[^a-z0-9.]+', '_', model.lower())
+    return f'logs/frame_mismatch_{safe}.csv'
+
+
+def load_done(path):
+    """Viewpoints already measured, keyed by (bearing, range)."""
+    rows = []
+    if os.path.exists(path):
+        with open(path, newline='') as fh:
+            rows = [r for r in csv.DictReader(fh)]
+    done = set()
+    for r in rows:
+        if r.get('llm_naive_brg_err') or r.get('llm_posed_brg_err'):
+            try:
+                done.add((float(r['mismatch_deg']), float(r['range_m'])))
+            except (KeyError, ValueError, TypeError):
+                pass
+    return rows, done
+
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
 
@@ -104,7 +132,13 @@ def teleport(x, y, z, yaw):
 class Grab:
     def __init__(self, node):
         self.img = None
-        node.create_subscription(Image, '/camera/image_raw', self._cb, 10)
+        # Depth 1. At depth 10 the queue fills with frames rendered before the
+        # teleport whenever the loop pauses -- which it does for seconds at a
+        # time while the LLM arms are called -- and the capture then scores the
+        # previous viewpoint's image against this viewpoint's geometry.
+        # Reproduced without spending quota: 62% coverage with no delay, 0%
+        # with a ten-second one.
+        node.create_subscription(Image, '/camera/image_raw', self._cb, 1)
 
     def _cb(self, m):
         a = np.frombuffer(m.data, dtype=np.uint8).reshape(m.height, m.width, 3)
@@ -148,6 +182,11 @@ def fresh(node, g, skip=2):
     under a centimetre of fall). The caller still reads the true pose at that
     instant rather than trusting the commanded one.
     """
+    # Drain whatever is already queued before waiting for anything new. Depth 1
+    # keeps this short, but one stale frame can still be sitting there.
+    for _ in range(5):
+        g.img = None
+        rclpy.spin_once(node, timeout_sec=0.0)
     for _ in range(skip + 1):
         g.img = None
         t0 = time.time()
@@ -197,6 +236,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--no-llm', action='store_true',
                     help='geometry only; costs no API quota')
+    ap.add_argument('--delay', type=float, default=0.0,
+                    help='bakis acilari arasina yapay bekleme (sn). LLM '
+                         'cagrilarinin yarattigi gecikmeyi kota harcamadan '
+                         'taklit etmek icin.')
     ap.add_argument('--repeat', type=int, default=1,
                     help='supurmeyi N kez tekrarla ve ornekleri havuzla. '
                          'Tek supurme yeterince kararli degil: ayni kod ve '
@@ -223,6 +266,18 @@ def main():
     rclpy.init()
     node = rclpy.create_node('frame_mismatch')
     g = Grab(node)
+
+    # Refuse to start without a camera. A batch once ran all ten viewpoints
+    # against no image at all -- the bridge had failed to launch, from a
+    # relative path resolved in the wrong directory -- and reported "kare yok"
+    # ten times as though that were a measurement. Checking once at the top
+    # turns a silently empty run into a message that says what to fix.
+    if fresh(node, g, skip=0) is None:
+        rclpy.shutdown()
+        pose.stop()
+        sys.exit("/camera/image_raw'dan kare gelmiyor -- kopru calisiyor mu?\n"
+                 "  ros2 launch /home/taha/DRONIONS/ros/launch/"
+                 "dronions_px4_bridge.launch.py")
     det = YOLOWorldDetector()
     det.set_target(TARGET_NAME)
 
@@ -239,6 +294,8 @@ def main():
           f"{'err m':>8} {'err d':>8} | {'err m':>8} {'err d':>8}")
     print("-" * len(hdr))
 
+    out_csv = out_path_for(args.model, args.no_llm)
+    prior, done = load_done(out_csv)
     rows = []
     sweeps = args.repeat if args.no_llm else 1
     if sweeps > 1:
@@ -251,6 +308,21 @@ def main():
         if not line_blocked(dxy, TARGET_XY):
             viewpoints.append((b, rng))
     blocked = len(all_vps) - len(viewpoints)
+    if done and not args.no_llm:
+        before = len(viewpoints)
+        # `mismatch` is what the CSV records, and it is derived from the
+        # bearing, so the key has to be recomputed the same way rather than
+        # compared against the raw bearing.
+        def key_of(b, r):
+            aa = math.radians(b)
+            yw = math.atan2(-r * math.sin(aa), -r * math.cos(aa))
+            mm = math.degrees(math.atan2(math.sin(yw - USER_YAW),
+                                         math.cos(yw - USER_YAW)))
+            return (round(mm, 1), float(r))
+        viewpoints = [v for v in viewpoints if key_of(*v) not in done]
+        print(f"{before - len(viewpoints)} bakis acisi onceki partilerde "
+              f"olculmus, atlaniyor ({len(viewpoints)} kaldi)\n")
+
     if args.limit and args.limit < len(viewpoints):
         # Evenly spaced, not the first N. The list is ordered by bearing, so
         # a prefix would spend the whole quota on one side of the target and
@@ -270,6 +342,8 @@ def main():
             yaw = math.atan2(-dy, -dx)                 # face the target
             mismatch = math.degrees(math.atan2(math.sin(yaw - USER_YAW),
                                                math.cos(yaw - USER_YAW)))
+            if args.delay:
+                time.sleep(args.delay)
             teleport(drone_xy[0], drone_xy[1], VIEW_ALT, yaw)
             settled(pose, drone_xy)
             img = fresh(node, g)
@@ -412,6 +486,7 @@ def main():
               "uydurma sayi soylememek icin)")
 
     os.makedirs('logs', exist_ok=True)
+    rows = prior + rows
     # Taken from the rows rather than hardcoded. The fixed list silently
     # dropped the altitude columns added to diagnose the falling-drone problem,
     # so the run that was meant to check the fix could not be checked.
@@ -420,12 +495,16 @@ def main():
         for k in r:
             if k not in keys:
                 keys.append(k)
-    with open(OUT_CSV, 'w', newline='') as fh:
+    with open(out_csv, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=keys)
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k) for k in keys})
-    print(f"\nwrote {OUT_CSV}")
+    remaining = len([1 for b in VIEW_BEARINGS for r in VIEW_RANGES]) - len(rows)
+    print(f"\nwrote {out_csv}  ({len(rows)} satir toplam)")
+    if not args.no_llm and remaining > 0:
+        print(f"kalan bakis acisi: ~{remaining}, "
+              f"gunluk 20 cagri ile ~{(remaining * 2 + 19) // 20} gun")
 
     node.destroy_node()
     rclpy.shutdown()
