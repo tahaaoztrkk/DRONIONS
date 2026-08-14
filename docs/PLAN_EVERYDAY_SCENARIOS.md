@@ -402,6 +402,45 @@ recur in any of the five runs.
 
 ---
 
+## 5e. Result: the crashes, and what fixed part of them
+
+Ten-run approach campaigns, each run starting the sweep from a different
+waypoint so the geometry varies:
+
+| campaign | sensing | crashes | arrivals on healthy runs |
+|---|---|---|---|
+| 1 | forward fan ±0.35 rad | 4/10 | 6/6 |
+| 2 | + downward lidar | 3/10 | 7/7 |
+| 3 | (repeat) | 3/10 | 6/6 |
+| 4 | + fan ±1.05 rad, side clearance | **2/10** | 8/8 |
+
+The trend is downward and the mechanism demonstrably fires — the sweep pushed
+away from a wall 21 times in campaign 4 — but **n=10 cannot separate 20% from
+30%**, and this should not be reported as a proven reduction.
+
+What *is* attributable is where the crashes start. In campaigns 1-3 every one
+began within 0.65 m of the wall, one with the propellers eleven centimetres
+from it, and the lidar reported no obstacle throughout: at ±0.35 rad the fan
+spans only ±0.33 m at 0.9 m range, narrower than the airframe's own corridor,
+so a wall abeam was invisible. After widening, the two remaining crashes began
+1.05 and 1.48 m out. The proximity mechanism looks closed; whatever is left is
+something else.
+
+Two lessons worth carrying:
+
+**"Is my path blocked" and "am I about to clip something" are different
+questions.** The lateral-corridor test answers the first correctly and says
+nothing about the second — a wall abeam obstructs nothing, and was correctly
+reported as no obstacle right up until contact. They need separate sensing and
+separate responses: turn for one, slide sideways for the other.
+
+**A sensor can be present and still blind.** The corridor test was written
+months before it changed any decision, because every return the narrow fan
+could see was already inside the corridor. It only became load-bearing once
+the fan was wide enough to see past it.
+
+---
+
 ## 6. Environment
 
 - **Indoor room, human scale.** Ceiling 2.4 m — today's `HOVER_ALTITUDE = 2.0`
