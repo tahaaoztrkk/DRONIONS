@@ -204,14 +204,32 @@ ANSWER_FORMAT = (
 )
 
 
+# Minimum gap between API calls. The free tier limits requests per minute as
+# well as per day, and the sweep fires two calls per viewpoint back to back --
+# a whole 37-viewpoint run returned zero answers while the daily quota was
+# still available, because the burst never let the per-minute window drain.
+# Retrying after 50 s did not help: the next viewpoint's calls arrived
+# immediately and kept the limit saturated.
+MIN_CALL_GAP = 8.0      # s
+_last_call = [0.0]
+
+
 def ask_llm(client, img_bgr, prompt, model=None, retries=2):
-    """One VLM query. Quota errors are returned, not raised: losing the whole
-    sweep because one call hit the daily limit wastes the other answers."""
+    """One VLM query, paced and with its failure text preserved.
+
+    Errors are returned rather than raised: losing a whole sweep because one
+    call hit a limit wastes every other answer. The text comes back with them
+    because a run once reported no LLM answers at all and nothing anywhere
+    said why -- the reason had been computed and thrown away."""
     import PIL.Image
     pil = PIL.Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
     model = model or GEMINI_MODEL
     text = ""
     for attempt in range(retries + 1):
+        gap = MIN_CALL_GAP - (time.time() - _last_call[0])
+        if gap > 0:
+            time.sleep(gap)
+        _last_call[0] = time.time()
         try:
             r = client.models.generate_content(model=model, contents=[prompt, pil])
             text = r.text.strip()
@@ -424,6 +442,8 @@ def main():
                 if got:
                     nd = abs(got[0] - true_d)
                     nb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
+                else:
+                    row['llm_naive_note'] = txt_n[:100]
 
                 posed = (
                     f"You are the camera of an assistive drone helping a blind user "
@@ -440,6 +460,8 @@ def main():
                 if got:
                     pd = abs(got[0] - true_d)
                     pb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
+                else:
+                    row['llm_posed_note'] = txt_p[:100]
             row.update(llm_naive_dist_err=nd, llm_naive_brg_err=nb,
                        llm_posed_dist_err=pd, llm_posed_brg_err=pb)
             rows.append(row)
