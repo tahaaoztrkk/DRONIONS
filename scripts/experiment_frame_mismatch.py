@@ -100,6 +100,46 @@ def out_path_for(model, no_llm):
     return f'logs/frame_mismatch_{safe}.csv'
 
 
+# Every column a row can carry. Explicit, and checked against each row before
+# writing: a hardcoded subset silently dropped the altitude columns once, and
+# the run that was meant to verify a fix could not be verified. Failing loudly
+# on an unknown key is the opposite mistake to make.
+FIELDS = ['mismatch_deg', 'range_m', 'alt_cmd', 'alt_actual', 'alt_drop',
+          'geom_area', 'geom_dist_err', 'geom_brg_err', 'geom_reason',
+          'llm_naive_dist_err', 'llm_naive_brg_err', 'llm_naive_note',
+          'llm_posed_dist_err', 'llm_posed_brg_err', 'llm_posed_note']
+
+
+class RowWriter:
+    """Writes each viewpoint as it completes, not at the end.
+
+    A 37-viewpoint sweep was interrupted after eleven had produced paired
+    answers, and every one was lost: the file was only written once the loop
+    finished. On a run that takes over an hour and spends a daily API quota
+    doing it, all-or-nothing is the wrong contract -- and resume already knows
+    how to pick up a partial file.
+    """
+
+    def __init__(self, path, prior):
+        self.path = path
+        self.fh = open(path, 'w', newline='')
+        self.w = csv.DictWriter(self.fh, fieldnames=FIELDS, extrasaction='ignore')
+        self.w.writeheader()
+        for r in prior:
+            self.write(r)
+
+    def write(self, row):
+        unknown = set(row) - set(FIELDS)
+        if unknown:
+            raise KeyError(f"CSV sutunu tanimsiz: {sorted(unknown)} -- "
+                           f"FIELDS listesine ekleyin")
+        self.w.writerow(row)
+        self.fh.flush()
+
+    def close(self):
+        self.fh.close()
+
+
 def load_done(path):
     """Viewpoints already measured, keyed by (bearing, range)."""
     rows = []
@@ -314,6 +354,8 @@ def main():
 
     out_csv = out_path_for(args.model, args.no_llm)
     prior, done = load_done(out_csv)
+    os.makedirs('logs', exist_ok=True)
+    writer = RowWriter(out_csv, prior)
     rows = []
     sweeps = args.repeat if args.no_llm else 1
     if sweeps > 1:
@@ -465,6 +507,7 @@ def main():
             row.update(llm_naive_dist_err=nd, llm_naive_brg_err=nb,
                        llm_posed_dist_err=pd, llm_posed_brg_err=pb)
             rows.append(row)
+            writer.write(row)
 
             def f(v, w, unit=''):
                 return f"{v:{w}.1f}{unit}" if v is not None else f"{'--':>{w}}"
@@ -507,21 +550,8 @@ def main():
         print("    (cevap vermemek tasarim geregi -- kontrol edemeyecek birine "
               "uydurma sayi soylememek icin)")
 
-    os.makedirs('logs', exist_ok=True)
+    writer.close()
     rows = prior + rows
-    # Taken from the rows rather than hardcoded. The fixed list silently
-    # dropped the altitude columns added to diagnose the falling-drone problem,
-    # so the run that was meant to check the fix could not be checked.
-    keys = []
-    for r in rows:
-        for k in r:
-            if k not in keys:
-                keys.append(k)
-    with open(out_csv, 'w', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=keys)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k) for k in keys})
     remaining = len([1 for b in VIEW_BEARINGS for r in VIEW_RANGES]) - len(rows)
     print(f"\nwrote {out_csv}  ({len(rows)} satir toplam)")
     if not args.no_llm and remaining > 0:
