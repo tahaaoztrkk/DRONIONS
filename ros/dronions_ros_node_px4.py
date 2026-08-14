@@ -149,6 +149,17 @@ AIRFRAME_HALF_WIDTH = 0.339
 # purpose: household doorways are 0.8-0.9 m, so there is very little to spend.
 CORRIDOR_CLEARANCE = 0.06
 CORRIDOR_HALF_WIDTH = AIRFRAME_HALF_WIDTH + CORRIDOR_CLEARANCE
+
+# Lateral clearance below which the sweep pushes away from a wall it is flying
+# alongside. The airframe sweeps 0.339 m, so this leaves a quarter of a metre
+# of air; the crashes on record began between 0.38 and 0.65 m.
+MIN_SIDE_CLEARANCE = 0.60       # m
+SIDE_PUSH_SPEED = 0.20          # m/s
+# Returns count as abeam beyond this angle, and only within this range -- a
+# wall three metres ahead and slightly off-centre is not something to dodge.
+SIDE_MIN_ANGLE = 0.5            # rad
+SIDE_RANGE_WINDOW = 2.0         # m
+SIDE_LOG_INTERVAL = 5.0         # s
 AVOID_ANGULAR = 0.35
 # How long a turn is committed to after touching an obstacle. Randomized so
 # repeated contacts with the same wall don't produce the same escape path.
@@ -656,6 +667,14 @@ class DronionsRosNodePX4(Node):
         # whether there is a way through.
         self._min_range = float('inf')
         self._blocked = False
+        # Nearest thing to each side, regardless of whether it is in the way.
+        # The corridor test answers "is my path blocked", which is the right
+        # question for steering and the wrong one for not clipping a wall the
+        # drone is flying alongside: three crashes in ten runs each began
+        # within 0.65 m of it, one with the propellers 11 cm clear, and the
+        # corridor correctly reported no obstruction every time.
+        self._side_left = float('inf')
+        self._side_right = float('inf')
         for i, r in enumerate(msg.ranges):
             if not math.isfinite(r):
                 continue
@@ -675,8 +694,16 @@ class DronionsRosNodePX4(Node):
             # bearing the moment the fan is widened, which the doorway work
             # needs anyway: at present the frame edges are invisible until the
             # drone is too close to avoid them.
-            if abs(r * math.sin(angle)) < CORRIDOR_HALF_WIDTH:
+            lateral = r * math.sin(angle)
+            if abs(lateral) < CORRIDOR_HALF_WIDTH:
                 self._blocked = True
+            # Only returns roughly abeam count as side clearance; something
+            # far ahead and slightly off-centre is not a wall to be brushed.
+            if abs(angle) > SIDE_MIN_ANGLE and r < SIDE_RANGE_WINDOW:
+                if lateral > 0:
+                    self._side_left = min(self._side_left, lateral)
+                else:
+                    self._side_right = min(self._side_right, -lateral)
 
     def _on_scan_down(self, msg: LaserScan):
         finite = [r for r in msg.ranges if math.isfinite(r)]
@@ -698,6 +725,10 @@ class DronionsRosNodePX4(Node):
 
     def min_range(self) -> float:
         return self._min_range
+
+    def side_clearance(self):
+        """(left, right) distance to the nearest thing abeam, in metres."""
+        return self._side_left, self._side_right
 
     def _on_state(self, msg: State):
         self.state = msg
@@ -1165,6 +1196,7 @@ def main():
     pose_log_after = 0.0
     size_log_after = 0.0
     contact_log_after = 0.0
+    side_log_after = 0.0
     pose_stale = False
     pose_broken = False
     ref_colour = None
@@ -1390,8 +1422,23 @@ def main():
                               f"hedef_wp={wanderer.current_waypoint()}")
                     pose_log_after = time.time() + POSE_LOG_INTERVAL
 
-                node.set_desired_twist(
-                    wanderer.twist(node.obstacle_ahead(), node.current_altitude(), sx, sy, syaw))
+                sweep_twist = wanderer.twist(node.obstacle_ahead(),
+                                             node.current_altitude(), sx, sy, syaw)
+                # Slide away from anything the drone is flying too close
+                # alongside. This is separate from the avoidance turn, which
+                # answers "is my path blocked" -- a wall abeam blocks nothing
+                # and was correctly ignored right up until the propellers
+                # touched it. Lateral only: the sweep keeps its heading and
+                # keeps making progress along the row.
+                left, right = node.side_clearance()
+                if min(left, right) < MIN_SIDE_CLEARANCE:
+                    sweep_twist.linear.y = (SIDE_PUSH_SPEED if right < left
+                                            else -SIDE_PUSH_SPEED)
+                    if time.time() > side_log_after:
+                        log_event(f"Yan bosluk dar: sol {left:.2f} m sag {right:.2f} m "
+                                  f"-- {'sola' if right < left else 'saga'} kaciliyor.")
+                        side_log_after = time.time() + SIDE_LOG_INTERVAL
+                node.set_desired_twist(sweep_twist)
 
                 # Say roughly where the search has got to. Rate-limited inside
                 # Dialogue: a running commentary would compete with the hearing
