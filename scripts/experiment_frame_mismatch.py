@@ -29,6 +29,7 @@ import csv
 import math
 from collections import Counter
 import os
+import random
 import re
 import subprocess
 import sys
@@ -64,6 +65,24 @@ VIEW_BEARINGS = [-135.0, -112.5, -90.0, -67.5, -45.0, -22.5, 0.0,
 # model's guess does not obviously do either.
 VIEW_RANGES = [2.0, 3.0, 4.0]
 VIEW_ALT = 2.0
+
+# The drone is deliberately *not* aimed straight at the target.
+#
+# Every viewpoint used to set yaw = atan2(-dy, -dx), putting the target exactly
+# on the boresight, and the "posed" prompt hands the model the drone's position
+# and heading. Between them those facts determine the answer by arithmetic --
+# the target lies along the heading -- so that arm was measuring whether the
+# model can do trigonometry on numbers it was given, not whether it can read
+# space out of an image. It scored 4.3 deg against geometry's 8.3 on the first
+# paired batch, which is what exact arithmetic beating noisy detection looks
+# like, and the pilot's opposite result (45.3 deg, worst of three) was the same
+# artefact seen through a weaker model.
+#
+# A fixed pseudo-random offset per viewpoint breaks that, while staying well
+# inside the camera's ~50 deg horizontal half-angle so the target is still in
+# frame and still detectable.
+YAW_OFFSET_MAX = 0.45           # rad, ~26 deg
+YAW_OFFSET_SEED = 20260815
 
 # The wall, for line-of-sight screening. A viewpoint that looks at the target
 # through it measures occlusion, not spatial reasoning -- the pilot avoided
@@ -104,7 +123,7 @@ def out_path_for(model, no_llm):
 # writing: a hardcoded subset silently dropped the altitude columns once, and
 # the run that was meant to verify a fix could not be verified. Failing loudly
 # on an unknown key is the opposite mistake to make.
-FIELDS = ['mismatch_deg', 'range_m', 'alt_cmd', 'alt_actual', 'alt_drop',
+FIELDS = ['mismatch_deg', 'range_m', 'yaw_offset_deg', 'alt_cmd', 'alt_actual', 'alt_drop',
           'geom_area', 'geom_dist_err', 'geom_brg_err', 'geom_reason',
           'llm_naive_dist_err', 'llm_naive_brg_err', 'llm_naive_note',
           'llm_posed_dist_err', 'llm_posed_brg_err', 'llm_posed_note']
@@ -399,7 +418,11 @@ def main():
             a = math.radians(bearing)
             dx, dy = view_range * math.cos(a), view_range * math.sin(a)
             drone_xy = (TARGET_XY[0] + dx, TARGET_XY[1] + dy)
-            yaw = math.atan2(-dy, -dx)                 # face the target
+            # Deterministic per viewpoint, so a resumed batch reproduces the
+            # same geometry as the one it is continuing.
+            rng = random.Random((YAW_OFFSET_SEED, round(bearing, 1), view_range).__hash__())
+            yaw_offset = rng.uniform(-YAW_OFFSET_MAX, YAW_OFFSET_MAX)
+            yaw = math.atan2(-dy, -dx) + yaw_offset
             mismatch = math.degrees(math.atan2(math.sin(yaw - USER_YAW),
                                                math.cos(yaw - USER_YAW)))
             if args.delay:
@@ -414,6 +437,7 @@ def main():
             drone_xyz = actual if actual else (*drone_xy, VIEW_ALT)
             row = {'mismatch_deg': round(mismatch, 1),
                    'range_m': view_range,
+                   'yaw_offset_deg': round(math.degrees(yaw_offset), 1),
                    'alt_cmd': VIEW_ALT,
                    'alt_actual': round(drone_xyz[2], 3) if actual else None,
                    'alt_drop': round(VIEW_ALT - drone_xyz[2], 3) if actual else None}
