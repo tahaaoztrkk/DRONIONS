@@ -123,7 +123,9 @@ def out_path_for(model, no_llm):
 # writing: a hardcoded subset silently dropped the altitude columns once, and
 # the run that was meant to verify a fix could not be verified. Failing loudly
 # on an unknown key is the opposite mistake to make.
-FIELDS = ['mismatch_deg', 'range_m', 'yaw_offset_deg', 'alt_cmd', 'alt_actual', 'alt_drop',
+FIELDS = ['mismatch_deg', 'range_m', 'yaw_offset_deg', 'true_dist', 'true_brg',
+          'llm_naive_dist', 'llm_naive_brg', 'llm_posed_dist', 'llm_posed_brg',
+          'alt_cmd', 'alt_actual', 'alt_drop',
           'geom_area', 'geom_dist_err', 'geom_brg_err', 'geom_reason',
           'llm_naive_dist_err', 'llm_naive_brg_err', 'llm_naive_note',
           'llm_posed_dist_err', 'llm_posed_brg_err', 'llm_posed_note']
@@ -438,6 +440,8 @@ def main():
             row = {'mismatch_deg': round(mismatch, 1),
                    'range_m': view_range,
                    'yaw_offset_deg': round(math.degrees(yaw_offset), 1),
+                   'true_dist': round(true_d, 2),
+                   'true_brg': round(math.degrees(true_b), 1),
                    'alt_cmd': VIEW_ALT,
                    'alt_actual': round(drone_xyz[2], 3) if actual else None,
                    'alt_drop': round(VIEW_ALT - drone_xyz[2], 3) if actual else None}
@@ -506,6 +510,13 @@ def main():
                     f"{TARGET_NAME} relative to the user?\n{ANSWER_FORMAT}")
                 got, txt_n = ask_llm(client, img, naive, args.model)
                 if got:
+                    # The answer itself, not only its error. An arm that
+                    # scores well by emitting one constant value is
+                    # indistinguishable from one that reasons, unless what it
+                    # said is on record -- the posed arm returned exact zeros
+                    # often enough to need checking.
+                    row['llm_naive_dist'] = round(got[0], 2)
+                    row['llm_naive_brg'] = round(got[1], 1)
                     nd = abs(got[0] - true_d)
                     nb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
                 else:
@@ -524,6 +535,8 @@ def main():
                     f"relative to the user?\n{ANSWER_FORMAT}")
                 got, txt_p = ask_llm(client, img, posed, args.model)
                 if got:
+                    row['llm_posed_dist'] = round(got[0], 2)
+                    row['llm_posed_brg'] = round(got[1], 1)
                     pd = abs(got[0] - true_d)
                     pb = abs(((got[1] - math.degrees(true_b) + 180) % 360) - 180)
                 else:
