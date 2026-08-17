@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DRONIONS tabletop world: a table with four everyday objects on it.
+
+  Two questions the scenario world cannot answer. Is the measured detection
+  limit about size or about clutter — there the target stands in front of a 3 m
+  wall and past 2 m the detector returns the wall at every range, so the two
+  cannot be told apart. And does a table make a mug or a phone reachable at all,
+  by lifting it a metre closer to the drone, which is worth more than either
+  lens change (both measured, neither helped).
+
+  The objects are downloaded scanned meshes, not primitives, and that is not a
+  cosmetic choice. The first version of this world used flat coloured boxes and
+  scored 0/9 everywhere, including a "laptop" 253 px wide. The detector was
+  seeing it perfectly well: prompted with "rectangle" it returned a 167 px box
+  exactly where the object was. Prompted with "laptop" it returned the table.
+  An untextured grey rectangle is not a laptop to an open-vocabulary detector,
+  and no amount of size or distance fixes that. Whatever indoor scene gets built
+  later has to be made of recognisable objects for the same reason.
+
+  Widths below are measured from the mesh vertices, since they are what the
+  scoring compares detections against.
+-->
+<sdf version="1.9">
+  <world name="dronions_tabletop">
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+    <scene>
+      <grid>false</grid>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode/>
+            </friction>
+            <bounce/>
+            <contact/>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>500 500</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+        <pose>0 0 0 0 -0 0</pose>
+        <inertial>
+          <pose>0 0 0 0 -0 0</pose>
+          <mass>1</mass>
+          <inertia>
+            <ixx>1</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>1</iyy>
+            <iyz>0</iyz>
+            <izz>1</izz>
+          </inertia>
+        </inertial>
+        <enable_wind>false</enable_wind>
+      </link>
+      <pose>0 0 0 0 -0 0</pose>
+      <self_collide>false</self_collide>
+    </model>
+    <light name="sunUTC" type="directional">
+      <pose>0 0 500 0 -0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1</intensity>
+      <direction>0.001 0.625 -0.78</direction>
+      <diffuse>0.904 0.904 0.904 1</diffuse>
+      <specular>0.271 0.271 0.271 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <linear>0</linear>
+        <constant>1</constant>
+        <quadratic>0</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0</inner_angle>
+        <outer_angle>0</outer_angle>
+        <falloff>0</falloff>
+      </spot>
+    </light>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.397971057728974</latitude_deg>
+      <longitude_deg> 8.546163739800146</longitude_deg>
+      <elevation>0</elevation>
+    </spherical_coordinates>
+
+    <!-- === Table and everyday objects === -->
+
+
+    <include>
+      <name>table</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Table</uri>
+      <pose>3.0 0.0 0.0 0.0 0 0.0</pose>
+    </include>
+
+    <include>
+      <name>laptop</name>
+      <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Travel_Mate_P_series_Notebook</uri>
+      <pose>3.35 0.2 1.015 0.0 0 2.6</pose>
+    </include>
+
+    <include>
+      <name>book</name>
+      <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Eat_to_Live_The_Amazing_NutrientRich_Program_for_Fast_and_Sustained_Weight_Loss_Revised_Edition_Book</uri>
+      <pose>3.35 -0.2 1.015 1.5708 0 0.5</pose>
+    </include>
+
+    <include>
+      <name>mug</name>
+      <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Cole_Hardware_Mug_Classic_Blue</uri>
+      <pose>2.7 0.2 1.015 0.0 0 1.2</pose>
+    </include>
+
+    <include>
+      <name>phone</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Samsung J8 Black</uri>
+      <pose>2.7 -0.2 0.9349999999999999 0.0 0 0.9</pose>
+    </include>
+
+  </world>
+</sdf>

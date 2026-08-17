@@ -152,6 +152,31 @@ def teleport(world, name, x, y, z, yaw=0.0):
         capture_output=True)
 
 
+def place(world, name, x, y, z, yaw, ground_z=0.12, settle=60):
+    """Put the drone at a viewpoint with its velocity actually zero.
+
+    set_pose moves the model but leaves its velocity alone, and with physics
+    paused every capture still advances 15 steps. So the drone kept the speed
+    it had picked up in the previous capture and gained more: measured drop was
+    2 cm, then 5, then 9, accelerating, and after a few hundred viewpoints it
+    is nowhere near where the geometry says. Touching it down first lets the
+    contact zero the velocity, after which every viewpoint holds to within half
+    a centimetre of the last.
+    """
+    teleport(world, name, x, y, ground_z, yaw)
+    world_control(world, f'pause: true, multi_step: {settle}')
+    teleport(world, name, x, y, z, yaw)
+
+
+def settled_pose(pose, delay=0.35):
+    """Pose as of the captured frame. With physics paused the pose stream only
+    moves when the world steps, and reading it the instant the frame arrives
+    returns the previous viewpoint -- which projects the target onto empty
+    floor and scores every detection as a miss."""
+    time.sleep(delay)
+    return pose.latest()
+
+
 def fresh(node, g, world, steps=15):
     """The first frame rendered after the teleport, with physics paused.
 
@@ -270,7 +295,7 @@ def main():
                 dx, dy = rng * math.cos(ang), rng * math.sin(ang)
                 dxy = (TARGET_XY[0] + dx, TARGET_XY[1] + dy)
                 yaw = math.atan2(-dy, -dx)
-                teleport(world, MODEL, dxy[0], dxy[1], VIEW_ALT, yaw)
+                place(world, MODEL, dxy[0], dxy[1], VIEW_ALT, yaw)
                 img = fresh(node, g, world)
                 trials += 1
                 if img is None:
@@ -283,7 +308,7 @@ def main():
                 # 427 px measured where geometry predicts 120, an object 2.2 m
                 # across. Requiring the width to match rejects it without
                 # rejecting a genuinely marginal detection of the box.
-                drone_xyz = pose.latest() or (dxy[0], dxy[1], VIEW_ALT)
+                drone_xyz = settled_pose(pose) or (dxy[0], dxy[1], VIEW_ALT)
                 h_img, w_img = img.shape[:2]
                 uv = project_into_frame((TARGET_XY[0], TARGET_XY[1], TARGET_Z),
                                         drone_xyz, yaw, w_img, h_img)

@@ -34,6 +34,7 @@ pairs=(
     "$REPO/px4/models/dronions_cam/model.sdf|$GZ/models/dronions_cam/model.sdf"
     "$REPO/px4/models/dronions_cam/model.config|$GZ/models/dronions_cam/model.config"
     "$REPO/px4/worlds/dronions_scenario.sdf|$GZ/worlds/dronions_scenario.sdf"
+    "$REPO/px4/worlds/dronions_tabletop.sdf|$GZ/worlds/dronions_tabletop.sdf"
     "$REPO/px4/airframes/$AIRFRAME_ID|$AIRFRAMES/$AIRFRAME_ID"
 )
 
