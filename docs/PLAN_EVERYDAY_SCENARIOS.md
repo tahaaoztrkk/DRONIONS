@@ -523,6 +523,88 @@ the fan was wide enough to see past it.
 
 ---
 
+## 5f. Result: how small an object the detector can find
+
+Every indoor scenario turns on this and none of them could be planned without
+it. Rather than introduce a cup -- which changes class, texture and shape at
+once -- only apparent size was varied: the same scenario box, viewed from
+further away. Apparent size goes as 1/range, so the 0.63 m box at 10 m subtends
+what a 0.12 m cup does at 2 m, with no new assets and no confound.
+
+Detection is counted only when the candidate **projects to where the box
+actually is**. Screening on frame position instead passed the wall on every
+single sample -- the drone is aimed at the box, so the wall behind it sits in
+the centre too -- and reported a flawless 100%. The giveaway was printing the
+expected pixel width alongside: geometry predicts 28 px at 12 m and the
+"detections" measured 169, an object 2.2 m across.
+
+| range | apparent width | recall |
+|---|---|---|
+| 2 m | 120 px | 8/9 |
+| 3 m | 94 px | 7/9 |
+| 4 m | 76 px | 5/9 |
+| 5 m | 63 px | 3/9 |
+| 6.5 m | 50 px | 2/9 |
+| 8 m | 41 px | 1/9 |
+| 10 m | 33 px | **0/9** |
+| 12 m | 28 px | **0/9** |
+
+Recall halves by about 76 px and reaches zero below roughly 35 px.
+
+### Raising the inference resolution makes it worse
+
+The camera publishes 1280×960 while inference runs at 640, so every object is
+halved before the model sees it. Doubling `IMAGE_SIZE` looked like the obvious
+lever. Measured, it is not:
+
+| range | imgsz 640 | imgsz 1280 |
+|---|---|---|
+| 2 m | 8/9 | 4/9 |
+| 3 m | 7/9 | 5/9 |
+| 4 m | 5/9 | 3/9 |
+| 5 m | 3/9 | 1/9 |
+| 8 m and beyond | 1/9, 0 | 1/9, 0 |
+
+Worse at close range, no better at long. YOLO-World is trained at 640 and
+running it at 1280 moves objects outside the scale distribution it expects. The
+setting is now overridable so this stays checkable, but the default stands.
+
+### What this means for the scenario set
+
+Turning the pixel thresholds into working distances:
+
+| object | width | 89% recall | 56% recall | zero below |
+|---|---|---|---|---|
+| scenario box | 0.63 m | 2.8 m | 4.5 m | 9.7 m |
+| backpack | 0.35 m | 1.6 m | 2.5 m | 5.4 m |
+| laptop | 0.33 m | 1.5 m | 2.3 m | 5.1 m |
+| **cup** | 0.12 m | **0.5 m** | 0.9 m | 1.9 m |
+| phone | 0.075 m | 0.34 m | 0.5 m | 1.2 m |
+| keys | 0.06 m | 0.27 m | 0.4 m | 0.9 m |
+
+**S1 as written -- "find my cup in this room" -- is not reachable by search.**
+The drone would have to be within half a metre of the cup to see it reliably,
+which is an inspection, not a search. Keys and a phone are further out of reach
+still.
+
+Three ways forward, in order of honesty:
+
+1. **Choose objects the perception can handle.** A backpack or laptop is
+   detectable at 1.5-2.5 m, which a sweep can deliver. S1 becomes "find my
+   backpack", mirrors the same reference task, and is measurable today.
+2. **Ask the VLM on the whole frame** rather than gating on YOLO. Gemini can
+   find a cup in an image the detector cannot, but at one API call per look and
+   20 a day, a sweep cannot be driven that way.
+3. **A close-up second pass** once the drone is near a surface -- which needs
+   the indoor scene first, and would be a genuine contribution rather than a
+   workaround.
+
+The measured floor is the finding either way: **this camera at this altitude
+cannot search for objects below roughly 0.3 m**, and no amount of prompt or
+threshold tuning changes that.
+
+---
+
 ## 6. Environment
 
 - **Indoor room, human scale.** Ceiling 2.4 m — today's `HOVER_ALTITUDE = 2.0`

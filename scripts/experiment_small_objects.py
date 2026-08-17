@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""
+Görevi: Tespit oranının görünen nesne boyutuyla nasıl düştüğünü ölçer.
+
+Every indoor scenario in docs/ turns on one unmeasured number: the detector
+finds the 0.63 m scenario box in 14% of viewpoints, and the objects those
+scenarios call for -- a cup, keys, a phone -- are five to ten times smaller.
+Whether "find my cup in this room" is buildable at all depends on what recall
+does at that size, and finding out after building the room would be expensive.
+
+Rather than introduce a cup, which would change class, texture and shape at the
+same time, this varies only apparent size: the same box, viewed from further
+away. Apparent size goes as 1/range, so the 0.63 m box at 10 m subtends what a
+0.12 m cup would at 2 m. The curve therefore predicts the cup case directly,
+with no new assets and no confound.
+
+  scripts/experiment_small_objects.py            # needs the sim + bridge up
+  scripts/experiment_small_objects.py --samples 6
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import os
+import subprocess
+import sys
+import time
+
+import cv2
+import numpy as np
+import rclpy
+from sensor_msgs.msg import Image
+
+sys.path.insert(0, '/home/taha/DRONIONS')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from perception.detector import YOLOWorldDetector
+from perception.filters import filter_candidates
+from navigation.spatial import CAMERA_HFOV, locate_target
+from gz_pose import PoseReader, find_world
+
+MODEL = 'x500_dronions_0'
+TARGET_NAME = 'box'
+TARGET_XY = (3.5, 2.0)
+TARGET_WIDTH = 0.63            # m, the scenario box with its scale applied
+
+# Ranges swept. The drone looks at the box from each, so apparent width falls
+# as 1/range. Beyond about 9 m the box is a handful of pixels, which is the
+# regime a cup occupies at conversational distance.
+RANGES = [2.0, 3.0, 4.0, 5.0, 6.5, 8.0, 10.0, 12.0]
+VIEW_ALT = 2.0
+# A few bearings per range, so a single unlucky viewing angle does not stand in
+# for the whole distance.
+BEARINGS = [-40.0, 0.0, 40.0]
+
+# How near the projected position must land to count as the box. Same bound
+# the survey campaign uses: the measured localization error plus the object's
+# own extent.
+HIT_RADIUS = 1.0
+
+OUT_CSV = 'logs/small_objects.csv'
+
+
+class Grab:
+    def __init__(self, node):
+        self.img = None
+        node.create_subscription(Image, '/camera/image_raw', self._cb, 1)
+
+    def _cb(self, m):
+        a = np.frombuffer(m.data, dtype=np.uint8).reshape(m.height, m.width, 3)
+        self.img = cv2.cvtColor(a, cv2.COLOR_RGB2BGR) if m.encoding == 'rgb8' else a
+
+
+def teleport(world, name, x, y, z, yaw=0.0):
+    q = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
+    subprocess.run(
+        ['gz', 'service', '-s', f'/world/{world}/set_pose',
+         '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
+         '--timeout', '2000',
+         '--req', f'name: "{name}" position: {{x: {x}, y: {y}, z: {z}}} '
+                  f'orientation: {{x: {q[0]}, y: {q[1]}, z: {q[2]}, w: {q[3]}}}'],
+        capture_output=True)
+
+
+def fresh(node, g, skip=2):
+    """First settled frame. Same discipline as the frame-mismatch sweep: drain
+    what is queued, then take a frame rendered after the teleport."""
+    for _ in range(5):
+        g.img = None
+        rclpy.spin_once(node, timeout_sec=0.0)
+    for _ in range(skip + 1):
+        g.img = None
+        t0 = time.time()
+        while g.img is None and time.time() - t0 < 6:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        if g.img is None:
+            return None
+    return g.img
+
+
+def expected_px(width_m, rng, alt, img_w):
+    """How wide the object should appear, from geometry alone."""
+    slant = math.hypot(rng, alt)
+    focal_px = (img_w / 2.0) / math.tan(CAMERA_HFOV / 2.0)
+    return width_m * focal_px / slant
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--samples', type=int, default=3,
+                    help='her menzil-yon ciftinde kac tekrar')
+    a = ap.parse_args()
+
+    world = find_world()
+    if not world:
+        sys.exit("Gazebo bulunamadi -- simulasyon calisiyor mu?")
+    pose = PoseReader(world)
+    pose.start()
+    if pose.wait_for_pose(15) is None:
+        sys.exit(f"Drone pozu gelmedi. Gorulen: {pose.seen_names()}")
+
+    rclpy.init()
+    node = rclpy.create_node('small_objects')
+    g = Grab(node)
+    if fresh(node, g, skip=0) is None:
+        sys.exit("/camera/image_raw'dan kare yok -- kopru calisiyor mu?")
+
+    det = YOLOWorldDetector()
+    det.set_target(TARGET_NAME)
+
+    print(f"hedef {TARGET_NAME}, gercek genislik {TARGET_WIDTH} m")
+    print(f"{len(RANGES)} menzil x {len(BEARINGS)} yon x {a.samples} tekrar\n")
+    print(f"{'menzil':>7} {'beklenen px':>12} {'tespit':>10} {'olculen px':>11}")
+    print("-" * 44)
+
+    rows = []
+    for rng in RANGES:
+        hits = 0
+        trials = 0
+        widths = []
+        for bearing in BEARINGS:
+            for _ in range(a.samples):
+                ang = math.radians(bearing)
+                dx, dy = rng * math.cos(ang), rng * math.sin(ang)
+                dxy = (TARGET_XY[0] + dx, TARGET_XY[1] + dy)
+                yaw = math.atan2(-dy, -dx)
+                teleport(world, MODEL, dxy[0], dxy[1], VIEW_ALT, yaw)
+                time.sleep(0.05)
+                img = fresh(node, g)
+                trials += 1
+                if img is None:
+                    continue
+                cands = filter_candidates(det.detect(img))
+                # A detection counts only if it projects to where the box
+                # actually is. Screening on frame position instead let the wall
+                # through on every single sample: the drone is aimed at the
+                # box, so the wall behind it sits in the centre too. The
+                # giveaway was the width -- 427 px measured where geometry
+                # predicts 120, i.e. an object 2.2 m across.
+                drone_xyz = pose.latest() or (dxy[0], dxy[1], VIEW_ALT)
+                quat = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
+                good = []
+                for c in cands:
+                    est = locate_target(c, drone_xyz, quat, plane_z=0.0)
+                    if est and math.dist(est[:2], TARGET_XY) <= HIT_RADIUS:
+                        good.append(c)
+                if good:
+                    hits += 1
+                    c = max(good, key=lambda c: c.confidence)
+                    widths.append(c.bbox[2] - c.bbox[0])
+
+        exp = expected_px(TARGET_WIDTH, rng, VIEW_ALT, 1280)
+        got = (sum(widths) / len(widths)) if widths else None
+        rows.append({'range_m': rng, 'expected_px': round(exp, 1),
+                     'trials': trials, 'hits': hits,
+                     'recall': round(hits / trials, 3) if trials else 0,
+                     'measured_px': round(got, 1) if got else ''})
+        print(f"{rng:7.1f} {exp:12.0f} {hits:6}/{trials:<3} "
+              f"{(f'{got:.0f}' if got else '--'):>11}")
+
+    os.makedirs('logs', exist_ok=True)
+    with open(OUT_CSV, 'w', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+
+    print("-" * 44)
+    print(f"\n-> {OUT_CSV}")
+    print("\nBir fincan (~0.12 m) su menzillerdeki kutuyla ayni buyuklukte gorunur:")
+    for d in (1.5, 2.0, 3.0):
+        equiv = TARGET_WIDTH / 0.12 * d
+        print(f"  fincan {d:.1f} m'de  ==  kutu {equiv:.1f} m'de")
+
+    pose.stop()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

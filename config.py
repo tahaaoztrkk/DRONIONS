@@ -8,7 +8,11 @@ load_dotenv()
 
 YOLO_MODEL = "yolov8x-worldv2.pt"
 DEVICE = "cuda"
-IMAGE_SIZE = 640
+# Inference resolution. The camera publishes 1280x960, so at 640 every object
+# is halved before YOLO ever sees it -- measured, detection of the 0.63 m box
+# collapses below about 60 camera pixels, which is 30 at inference. Overridable
+# so the trade can be measured rather than argued about.
+IMAGE_SIZE = int(os.getenv("DRONIONS_IMAGE_SIZE", "640"))
 CAMERA_SOURCE = "http://10.116.143.7:8080/video"
 CONFIDENCE_THRESHOLD = 0.15
 USE_GEMINI = True
