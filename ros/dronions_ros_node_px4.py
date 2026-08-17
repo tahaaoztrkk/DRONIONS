@@ -175,6 +175,25 @@ WAYPOINT_RADIUS = 0.8       # m; close enough to count as reached
 # A waypoint sitting behind the wall can never be reached. Abandon it rather
 # than let one blocked point stall the whole sweep.
 WAYPOINT_TIMEOUT = 25.0     # s
+
+# When a target is lost, sweep where it was last seen before carrying on.
+#
+# The sweep is a lawnmower over the whole area, so losing a target mid-approach
+# used to mean resuming the pattern from wherever the drone happened to be --
+# usually flying straight past the one place the target is known to be. Three
+# confirmations in one flight were each followed by the drone continuing to the
+# next row. Whatever made it lose the target (drifting out of frame, a failed
+# size check, a few blank frames) says nothing about the target having moved.
+#
+# Standoff rather than the point itself: the drone is often already on top of
+# it when the track breaks, and flying to the exact spot would only push it
+# closer than the camera can see. Arriving within this radius is close enough
+# to start looking around.
+REVISIT_STANDOFF = 2.5      # m
+REVISIT_SCAN_SECONDS = 12.0 # s; a slow yaw sweep, roughly half a turn
+REVISIT_SCAN_ANGULAR = 0.30 # rad/s
+# Past this the memory is stale enough that the sweep is the better bet.
+REVISIT_MAX_AGE = 45.0      # s
 # Consecutive obstacle contacts while pursuing one waypoint before giving up
 # on it. 2 = one retry from a different random turn direction.
 BLOCKED_HITS_BEFORE_SKIP = 2
@@ -436,6 +455,18 @@ class SearchPattern:
         self._blocked_hits = 0
         self._altitude = HOVER_ALTITUDE
         self._climb_note = None
+        self._revisit = None
+        self._revisit_scan_until = 0.0
+
+    def revisit(self, xy) -> None:
+        """Look here before resuming the sweep."""
+        self._revisit = xy
+        self._revisit_scan_until = 0.0
+        self._deadline = time.time() + WAYPOINT_TIMEOUT
+        self._altitude = HOVER_ALTITUDE
+
+    def revisiting(self) -> bool:
+        return self._revisit is not None
 
     def search_altitude(self) -> float:
         """Altitude the sweep currently wants. Rises when the way is blocked
@@ -525,6 +556,27 @@ class SearchPattern:
             # turn can never drive further into whatever triggered it.
             t.angular.z = AVOID_ANGULAR * self._turn_dir
             return t
+
+        if self._revisit is not None:
+            rx, ry = self._revisit
+            near = math.hypot(rx - x, ry - y) < REVISIT_STANDOFF
+            if not self._revisit_scan_until and (near or now > self._deadline):
+                self._revisit_scan_until = now + REVISIT_SCAN_SECONDS
+            if self._revisit_scan_until:
+                if now < self._revisit_scan_until:
+                    # Yaw in place. Translating here would carry the drone past
+                    # the very spot it came back to look at.
+                    t.angular.z = REVISIT_SCAN_ANGULAR
+                    return t
+                self._revisit = None
+                self._revisit_scan_until = 0.0
+                self._deadline = now + WAYPOINT_TIMEOUT
+            else:
+                bearing = math.atan2(ry - y, rx - x)
+                err = math.atan2(math.sin(bearing - yaw), math.cos(bearing - yaw))
+                t.angular.z = max(-AVOID_ANGULAR, min(AVOID_ANGULAR, 1.5 * err))
+                t.linear.x = EXPLORE_LINEAR if abs(err) < 0.6 else 0.0
+                return t
 
         wx, wy = self.current_waypoint()
         if math.hypot(wx - x, wy - y) < WAYPOINT_RADIUS or now > self._deadline:
@@ -1176,6 +1228,12 @@ def main():
     tracker = Tracker()
 
     current_phase = PHASE_SEARCH
+    # Where the target was last believed to be, and when. Every path back to
+    # searching goes through one place below, so the revisit is armed there
+    # rather than at each of the dozen sites that can lose a track.
+    last_seen_xy = None
+    last_seen_at = 0.0
+    previous_phase = PHASE_SEARCH
     target = None
     camera_warned = False
     last_alt_update = time.time()
@@ -1352,6 +1410,21 @@ def main():
             if pose_stale:
                 pose_stale = False
                 log_event("Konum akisi geri geldi.")
+
+            if current_phase == PHASE_SEARCH and previous_phase != PHASE_SEARCH:
+                # Just lost it. Whatever broke the track -- drifting out of
+                # frame, a failed size check, a few blank frames -- says
+                # nothing about the target having moved, so the place it was
+                # last seen is still the best place to look. Without this the
+                # sweep resumed from wherever the drone happened to be and
+                # flew straight past it; three confirmations in one flight
+                # were each followed by carrying on to the next row.
+                if (last_seen_xy is not None
+                        and time.time() - last_seen_at < REVISIT_MAX_AGE):
+                    wanderer.revisit(last_seen_xy)
+                    log_event(f"Son goruldugu yere donuluyor: "
+                              f"({last_seen_xy[0]:.1f}, {last_seen_xy[1]:.1f}).")
+            previous_phase = current_phase
 
             if current_phase == PHASE_SEARCH:
                 # A search that never ends is not an answer anyone can act on.
@@ -1776,6 +1849,8 @@ def main():
                     target_xyz = locate_target(nearest, node.pose_xyz(),
                                                node.orientation(), target=target)
                     if target_xyz:
+                        last_seen_xy = (target_xyz[0], target_xyz[1])
+                        last_seen_at = time.time()
                         # The estimate in world coordinates, logged so a run can
                         # be scored against the scenario's known object
                         # positions afterwards. Without it the log records what

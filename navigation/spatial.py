@@ -289,14 +289,39 @@ def size_plausible(candidate, drone_xyz, drone_quat, target: str) -> bool:
     Generalises past this scenario, which is the point -- in any real room
     there will be something larger than the target in view, and rejecting it
     should not depend on the detector naming it correctly.
+
+    Asking only about the floor is what this used to do, and it rejected a
+    laptop sitting on a table three separate times in one flight, each time
+    after the model had already confirmed it. The ray through the box's bottom
+    edge passes over the table and travels on to the floor well beyond, so the
+    range comes out too large and the width with it -- 0.8, 0.9 and 1.0 m for a
+    0.375 m laptop. locate_target had already learned about raised surfaces;
+    this had not. The question here is whether a thing that size could be the
+    target *at all*, so it is enough to be plausible on any surface it could
+    credibly be resting on.
+
+    That relaxation could have gutted the gate, so it was measured rather than
+    argued: 181 real detections across 25 viewpoints in the scenario world,
+    each classified as the box or not by projecting the box's known position
+    into the frame. The box keeps passing 100% of the time either way, and
+    rejection of everything else moves from 30.2% to 32.1% passing -- two
+    detections out of 106. The wall sits at a width ratio of 3.3 and is
+    rejected on every surface; the 30% that pass are the blue distractor, which
+    really is box-sized and which no size test can separate. That is what the
+    colour gate and the model are for.
     """
     expected = OBJECT_WIDTHS.get((target or "").lower().strip())
     if not expected:
         return True                 # nothing on file: no opinion
-    w = implied_width(candidate, drone_xyz, drone_quat)
-    if w is None:
-        return True                 # no range: no opinion
-    return expected * SIZE_MIN_RATIO <= w <= expected * SIZE_MAX_RATIO
+    measured = False
+    for plane_z in SUPPORT_HEIGHTS:
+        w = implied_width(candidate, drone_xyz, drone_quat, plane_z=plane_z)
+        if w is None:
+            continue
+        measured = True
+        if expected * SIZE_MIN_RATIO <= w <= expected * SIZE_MAX_RATIO:
+            return True
+    return not measured             # no range anywhere: no opinion
 
 
 def locate_target(candidate, drone_xyz, drone_quat, plane_z: Optional[float] = None,
