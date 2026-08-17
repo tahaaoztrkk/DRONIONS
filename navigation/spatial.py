@@ -48,12 +48,41 @@ def analyze_spatial_relations(objects: List[DetectionCandidate]) -> List[Dict[st
 # ---------------------------------------------------------------------------
 
 import math
+import os
+import re
 from typing import Optional, Tuple
 
 # Intrinsics read from the model, not assumed:
-#   mono_cam/model.sdf     -> horizontal_fov 1.74 rad (99.7 deg), 1280x960
-#   x500_dronions/model.sdf-> camera mounted pitched down by 0.35 rad
-CAMERA_HFOV = 1.74
+#   dronions_cam/model.sdf  -> horizontal_fov, 1280x960
+#   x500_dronions/model.sdf -> camera mounted pitched down by 0.35 rad
+#
+# The field of view is read out of the model file rather than written here as a
+# constant, because it is a variable in this project: it sets how small an
+# object the drone can find, and the lens gets changed to measure that. Two
+# copies of the number is one copy too many -- if they drift, nothing raises,
+# every projection is quietly skewed, and the error looks like a localization
+# bug. Env override for callers with no repo checkout; 1.74 is the stock lens.
+CAMERA_MODEL_SDF = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'px4', 'models', 'dronions_cam', 'model.sdf')
+
+
+def _camera_hfov(default: float = 1.74) -> float:
+    env = os.getenv('DRONIONS_CAMERA_HFOV')
+    if env:
+        return float(env)
+    try:
+        with open(CAMERA_MODEL_SDF) as fh:
+            m = re.search(r'<horizontal_fov>\s*([0-9.]+)\s*</horizontal_fov>',
+                          fh.read())
+        if m:
+            return float(m.group(1))
+    except OSError:
+        pass
+    return default
+
+
+CAMERA_HFOV = _camera_hfov()
 CAMERA_PITCH_DOWN = 0.35
 CAMERA_ASPECT = 4.0 / 3.0
 

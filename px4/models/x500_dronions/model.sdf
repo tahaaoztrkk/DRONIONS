@@ -19,9 +19,12 @@
          on approach they sank out of the bottom of the frame and tracking
          collapsed. A downward tilt puts the ground ahead in view at hover
          height and keeps a closing target framed. Both poses must match —
-         the include places the link, the joint fixes it to the airframe. -->
+         the include places the link, the joint fixes it to the airframe.
+
+         dronions_cam rather than PX4's mono_cam: identical, except the lens is
+         ours to change. See px4/models/dronions_cam/model.sdf. -->
     <include merge='true'>
-      <uri>model://mono_cam</uri>
+      <uri>model://dronions_cam</uri>
       <pose>.12 .03 .242 0 0.35 0</pose>
     </include>
     <joint name="CameraJoint" type="fixed">

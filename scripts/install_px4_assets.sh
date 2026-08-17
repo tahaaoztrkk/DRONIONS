@@ -31,6 +31,8 @@ AIRFRAME_ID="4022_gz_x500_dronions"
 pairs=(
     "$REPO/px4/models/x500_dronions/model.sdf|$GZ/models/x500_dronions/model.sdf"
     "$REPO/px4/models/x500_dronions/model.config|$GZ/models/x500_dronions/model.config"
+    "$REPO/px4/models/dronions_cam/model.sdf|$GZ/models/dronions_cam/model.sdf"
+    "$REPO/px4/models/dronions_cam/model.config|$GZ/models/dronions_cam/model.config"
     "$REPO/px4/worlds/dronions_scenario.sdf|$GZ/worlds/dronions_scenario.sdf"
     "$REPO/px4/airframes/$AIRFRAME_ID|$AIRFRAMES/$AIRFRAME_ID"
 )

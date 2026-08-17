@@ -36,29 +36,61 @@ sys.path.insert(0, '/home/taha/DRONIONS')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from perception.detector import YOLOWorldDetector
 from perception.filters import filter_candidates
-from navigation.spatial import CAMERA_HFOV, locate_target
+from navigation.spatial import CAMERA_HFOV, CAMERA_PITCH_DOWN
 from gz_pose import PoseReader, find_world
 
 MODEL = 'x500_dronions_0'
 TARGET_NAME = 'box'
 TARGET_XY = (3.5, 2.0)
 TARGET_WIDTH = 0.63            # m, the scenario box with its scale applied
+TARGET_Z = 0.30                # m, roughly the box's mid-height
+CAM_OFFSET = (0.12, 0.03, 0.242)   # camera mount, from x500_dronions/model.sdf
 
-# Ranges swept. The drone looks at the box from each, so apparent width falls
-# as 1/range. Beyond about 9 m the box is a handful of pixels, which is the
-# regime a cup occupies at conversational distance.
-RANGES = [2.0, 3.0, 4.0, 5.0, 6.5, 8.0, 10.0, 12.0]
+# What the sweep actually varies is apparent width, so that is what is listed
+# here -- the ranges are then computed from whatever lens is fitted. Listing
+# distances instead only works for one field of view: narrowing the lens from
+# 100 to 50 degrees makes the box 306 px at 2 m, and a sweep out to 12 m would
+# never reach the regime where detection fails. Two campaigns at different
+# lenses are comparable in pixels and not in metres, so pixels are the axis.
+PX_TARGETS = [120, 94, 76, 63, 50, 41, 33, 28]
 VIEW_ALT = 2.0
+
+# Past this the box leaves the modelled part of the world and the wall starts
+# intruding, so a wide lens simply cannot reach the smallest sizes. Better to
+# drop those rows and say so than to measure something else and report it as
+# apparent size.
+MAX_RANGE = 30.0
+
+
 # A few bearings per range, so a single unlucky viewing angle does not stand in
 # for the whole distance.
 BEARINGS = [-40.0, 0.0, 40.0]
 
-# How near the projected position must land to count as the box. Same bound
-# the survey campaign uses: the measured localization error plus the object's
-# own extent.
-HIT_RADIUS = 1.0
+# How far a detection's width may stray from what geometry predicts and still
+# be counted as the box. Wide enough that a loose or clipped box still counts,
+# tight enough to reject the wall, which is six times too large.
+SIZE_LO, SIZE_HI = 0.4, 2.5
 
-OUT_CSV = 'logs/small_objects.csv'
+
+def ranges_for(px_targets, width_m, alt, img_w, hfov):
+    """Horizontal ranges at which the box subtends each target width."""
+    focal = (img_w / 2.0) / math.tan(hfov / 2.0)
+    out = []
+    for px in px_targets:
+        slant = width_m * focal / px
+        if slant <= alt:                      # directly overhead, no horizontal
+            continue
+        rng = math.sqrt(slant ** 2 - alt ** 2)
+        if rng <= MAX_RANGE:
+            out.append((round(rng, 2), px))
+    return out
+
+
+def out_csv(hfov):
+    """One file per lens. The first version wrote a single path, so the second
+    campaign would have overwritten the first -- the only copy of the baseline
+    the new run exists to be compared against."""
+    return f'logs/small_objects_{round(math.degrees(hfov)):d}deg.csv'
 
 
 class Grab:
@@ -69,6 +101,14 @@ class Grab:
     def _cb(self, m):
         a = np.frombuffer(m.data, dtype=np.uint8).reshape(m.height, m.width, 3)
         self.img = cv2.cvtColor(a, cv2.COLOR_RGB2BGR) if m.encoding == 'rgb8' else a
+
+
+def world_control(world, req):
+    subprocess.run(
+        ['gz', 'service', '-s', f'/world/{world}/control',
+         '--reqtype', 'gz.msgs.WorldControl', '--reptype', 'gz.msgs.Boolean',
+         '--timeout', '2000', '--req', req],
+        capture_output=True)
 
 
 def teleport(world, name, x, y, z, yaw=0.0):
@@ -82,19 +122,32 @@ def teleport(world, name, x, y, z, yaw=0.0):
         capture_output=True)
 
 
-def fresh(node, g, skip=2):
-    """First settled frame. Same discipline as the frame-mismatch sweep: drain
-    what is queued, then take a frame rendered after the teleport."""
-    for _ in range(5):
+def fresh(node, g, world, steps=15):
+    """The first frame rendered after the teleport, with physics paused.
+
+    The drone is disarmed, so a teleport to 2 m is a drop: it is on the ground
+    0.9 s later, and waiting for a settled frame guaranteed a settled *grounded*
+    frame. Two whole campaigns were measured from ground level while every
+    expected-pixel figure assumed a 2 m hover -- consistent within itself, and
+    40% wrong in the near field, where it mattered most.
+
+    Pausing first fixes the altitude and makes frame capture deterministic as
+    well: with nothing being rendered, the queue can be drained down to empty,
+    and the next frame to arrive is necessarily the one that was asked for.
+    15 steps is about half a camera period at 30 Hz -- enough for exactly one
+    frame, during which the drone falls roughly a centimetre.
+    """
+    deadline = time.time() + 1.0
+    while time.time() < deadline:
         g.img = None
-        rclpy.spin_once(node, timeout_sec=0.0)
-    for _ in range(skip + 1):
-        g.img = None
-        t0 = time.time()
-        while g.img is None and time.time() - t0 < 6:
-            rclpy.spin_once(node, timeout_sec=0.05)
+        rclpy.spin_once(node, timeout_sec=0.02)
         if g.img is None:
-            return None
+            break
+    g.img = None
+    world_control(world, f'pause: true, multi_step: {steps}')
+    t0 = time.time()
+    while g.img is None and time.time() - t0 < 6:
+        rclpy.spin_once(node, timeout_sec=0.05)
     return g.img
 
 
@@ -103,6 +156,35 @@ def expected_px(width_m, rng, alt, img_w):
     slant = math.hypot(rng, alt)
     focal_px = (img_w / 2.0) / math.tan(CAMERA_HFOV / 2.0)
     return width_m * focal_px / slant
+
+
+def project_into_frame(world_xyz, drone_xyz, yaw, img_w, img_h):
+    """Where a known world point lands in the frame. Forward projection, the
+    opposite direction to navigation's locate_target.
+
+    Scoring by locate_target -- ray from the bbox down to the ground -- looked
+    natural and silently destroyed the experiment. It refuses rays shallower
+    than MAX_RANGE_HEIGHT_RATIO, correctly, because a ray cast from 2 m altitude
+    to something 26 m away is mostly noise. So every viewpoint past 10 m scored
+    zero detections whatever the camera saw: not a measurement, an artefact of
+    the scoring. Here the box's position is known, so projecting it into the
+    image instead has no shallow-ray problem at any range.
+    """
+    cam = (drone_xyz[0] + CAM_OFFSET[0] * math.cos(yaw) - CAM_OFFSET[1] * math.sin(yaw),
+           drone_xyz[1] + CAM_OFFSET[0] * math.sin(yaw) + CAM_OFFSET[1] * math.cos(yaw),
+           drone_xyz[2] + CAM_OFFSET[2])
+    dx, dy, dz = (world_xyz[0] - cam[0], world_xyz[1] - cam[1], world_xyz[2] - cam[2])
+    # into body frame (x forward, y left, z up)
+    bx = dx * math.cos(yaw) + dy * math.sin(yaw)
+    by = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    # then undo the camera's downward pitch
+    cp, sp = math.cos(CAMERA_PITCH_DOWN), math.sin(CAMERA_PITCH_DOWN)
+    fx = bx * cp - dz * sp
+    fz = bx * sp + dz * cp
+    if fx <= 0.01:
+        return None
+    focal = (img_w / 2.0) / math.tan(CAMERA_HFOV / 2.0)
+    return (img_w / 2.0 - by / fx * focal, img_h / 2.0 - fz / fx * focal)
 
 
 def main():
@@ -122,19 +204,31 @@ def main():
     rclpy.init()
     node = rclpy.create_node('small_objects')
     g = Grab(node)
-    if fresh(node, g, skip=0) is None:
+    world_control(world, 'pause: true')
+    if fresh(node, g, world) is None:
         sys.exit("/camera/image_raw'dan kare yok -- kopru calisiyor mu?")
 
     det = YOLOWorldDetector()
     det.set_target(TARGET_NAME)
 
+    plan = ranges_for(PX_TARGETS, TARGET_WIDTH, VIEW_ALT, 1280, CAMERA_HFOV)
+    if not plan:
+        sys.exit("Bu lensle hicbir hedef boyut menzil icinde degil.")
+    dropped = [px for px in PX_TARGETS if px not in [p for _, p in plan]]
+
     print(f"hedef {TARGET_NAME}, gercek genislik {TARGET_WIDTH} m")
-    print(f"{len(RANGES)} menzil x {len(BEARINGS)} yon x {a.samples} tekrar\n")
+    print(f"lens {math.degrees(CAMERA_HFOV):.0f} derece "
+          f"({CAMERA_HFOV:.4f} rad), odak "
+          f"{(1280 / 2) / math.tan(CAMERA_HFOV / 2):.0f} px")
+    if dropped:
+        print(f"menzil disi kalan boyutlar ({MAX_RANGE:.0f} m siniri): "
+              f"{', '.join(str(p) for p in dropped)} px")
+    print(f"{len(plan)} boyut x {len(BEARINGS)} yon x {a.samples} tekrar\n")
     print(f"{'menzil':>7} {'beklenen px':>12} {'tespit':>10} {'olculen px':>11}")
     print("-" * 44)
 
     rows = []
-    for rng in RANGES:
+    for rng, _target_px in plan:
         hits = 0
         trials = 0
         widths = []
@@ -145,24 +239,31 @@ def main():
                 dxy = (TARGET_XY[0] + dx, TARGET_XY[1] + dy)
                 yaw = math.atan2(-dy, -dx)
                 teleport(world, MODEL, dxy[0], dxy[1], VIEW_ALT, yaw)
-                time.sleep(0.05)
-                img = fresh(node, g)
+                img = fresh(node, g, world)
                 trials += 1
                 if img is None:
                     continue
                 cands = filter_candidates(det.detect(img))
-                # A detection counts only if it projects to where the box
-                # actually is. Screening on frame position instead let the wall
-                # through on every single sample: the drone is aimed at the
-                # box, so the wall behind it sits in the centre too. The
-                # giveaway was the width -- 427 px measured where geometry
-                # predicts 120, i.e. an object 2.2 m across.
+                # A detection counts only if it covers where the box actually
+                # is *and* is roughly the right size. Position alone is not
+                # enough: the drone is aimed at the box, so the wall behind it
+                # covers the same pixels, and it passed every single sample --
+                # 427 px measured where geometry predicts 120, an object 2.2 m
+                # across. Requiring the width to match rejects it without
+                # rejecting a genuinely marginal detection of the box.
                 drone_xyz = pose.latest() or (dxy[0], dxy[1], VIEW_ALT)
-                quat = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
+                h_img, w_img = img.shape[:2]
+                uv = project_into_frame((TARGET_XY[0], TARGET_XY[1], TARGET_Z),
+                                        drone_xyz, yaw, w_img, h_img)
+                exp_w = expected_px(TARGET_WIDTH, rng, VIEW_ALT, w_img)
                 good = []
-                for c in cands:
-                    est = locate_target(c, drone_xyz, quat, plane_z=0.0)
-                    if est and math.dist(est[:2], TARGET_XY) <= HIT_RADIUS:
+                if uv is not None:
+                    for c in cands:
+                        x0, y0, x1, y1 = c.bbox
+                        if not (x0 <= uv[0] <= x1 and y0 <= uv[1] <= y1):
+                            continue
+                        if not SIZE_LO <= (x1 - x0) / exp_w <= SIZE_HI:
+                            continue
                         good.append(c)
                 if good:
                     hits += 1
@@ -171,7 +272,8 @@ def main():
 
         exp = expected_px(TARGET_WIDTH, rng, VIEW_ALT, 1280)
         got = (sum(widths) / len(widths)) if widths else None
-        rows.append({'range_m': rng, 'expected_px': round(exp, 1),
+        rows.append({'hfov_deg': round(math.degrees(CAMERA_HFOV), 1),
+                     'range_m': rng, 'expected_px': round(exp, 1),
                      'trials': trials, 'hits': hits,
                      'recall': round(hits / trials, 3) if trials else 0,
                      'measured_px': round(got, 1) if got else ''})
@@ -179,18 +281,20 @@ def main():
               f"{(f'{got:.0f}' if got else '--'):>11}")
 
     os.makedirs('logs', exist_ok=True)
-    with open(OUT_CSV, 'w', newline='') as fh:
+    path = out_csv(CAMERA_HFOV)
+    with open(path, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
 
     print("-" * 44)
-    print(f"\n-> {OUT_CSV}")
+    print(f"\n-> {path}")
     print("\nBir fincan (~0.12 m) su menzillerdeki kutuyla ayni buyuklukte gorunur:")
     for d in (1.5, 2.0, 3.0):
         equiv = TARGET_WIDTH / 0.12 * d
         print(f"  fincan {d:.1f} m'de  ==  kutu {equiv:.1f} m'de")
 
+    world_control(world, 'pause: false')
     pose.stop()
     rclpy.shutdown()
 

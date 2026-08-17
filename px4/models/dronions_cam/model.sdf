@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DRONIONS camera: PX4's stock mono_cam, forked so the lens is ours to change.
+
+  horizontal_fov is an experimental variable in this project, not a fixed
+  property of the hardware. Detection recall was measured against apparent
+  object size (docs/PLAN_EVERYDAY_SCENARIOS.md 5f) and it collapses below about
+  35 px of object width -- which turns the field of view into the single number
+  deciding how small an object the drone can find. At the stock 1.74 rad (100
+  deg) a cup is only visible from 0.85 m, closer than the airframe is wide.
+  Narrowing the lens trades sweep coverage for reach.
+
+  Editing PX4's own mono_cam would have changed every stock airframe that
+  includes it, silently, in a checkout we do not version.
+
+  Use scripts/set_camera_fov.py to change it -- it keeps the projection maths
+  in navigation/spatial.py in step, and a mismatch there does not fail loudly,
+  it just puts every object in the wrong place.
+-->
+<sdf version='1.9'>
+  <model name='dronions_cam'>
+    <pose>0 0 0 0 0 0</pose>
+    <self_collide>false</self_collide>
+    <static>false</static>
+    <link name="camera_link">
+      <inertial>
+        <pose>0.03 0.03 0.03 0 0 0</pose>
+        <mass>0.050</mass>
+        <inertia>
+          <ixx>0.00004</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.00004</iyy>
+          <iyz>0</iyz>
+          <izz>0.00004</izz>
+        </inertia>
+      </inertial>
+      <visual name="dronions_cam/visual/housing">
+        <geometry>
+          <box>
+            <size>0.02 0.04 0.04</size>
+          </box>
+        </geometry>
+      </visual>
+      <visual name="dronions_cam/visual/lens">
+        <pose>0.015 0 0 0 1.5707 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.008</radius>
+            <length>0.01</length>
+          </cylinder>
+        </geometry>
+      </visual>
+      <visual name="dronions_cam/visual/lens_glass">
+        <pose>0.014 0 0 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.0079</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <ambient>.4 .4 .5 .95</ambient>
+          <diffuse>.4 .4 .5 .95</diffuse>
+          <specular>1 1 1 1</specular>
+          <emissive>0 0 0 1</emissive>
+        </material>
+      </visual>
+      <sensor name="camera" type="camera">
+        <gz_frame_id>camera_link</gz_frame_id>
+        <pose>0 0 0 0 0 0</pose>
+        <camera>
+          <horizontal_fov>0.8727</horizontal_fov>
+          <image>
+            <width>1280</width>
+            <height>960</height>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>3000</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+        <visualize>true</visualize>
+      </sensor>
+      <gravity>true</gravity>
+      <velocity_decay />
+    </link>
+  </model>
+</sdf>
