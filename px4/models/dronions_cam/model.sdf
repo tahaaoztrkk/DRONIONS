@@ -69,7 +69,7 @@
         <gz_frame_id>camera_link</gz_frame_id>
         <pose>0 0 0 0 0 0</pose>
         <camera>
-          <horizontal_fov>0.8727</horizontal_fov>
+          <horizontal_fov>1.7453</horizontal_fov>
           <image>
             <width>1280</width>
             <height>960</height>

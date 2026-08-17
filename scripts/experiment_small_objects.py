@@ -30,7 +30,7 @@ import time
 import cv2
 import numpy as np
 import rclpy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
 
 sys.path.insert(0, '/home/taha/DRONIONS')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -91,6 +91,36 @@ def out_csv(hfov):
     campaign would have overwritten the first -- the only copy of the baseline
     the new run exists to be compared against."""
     return f'logs/small_objects_{round(math.degrees(hfov)):d}deg.csv'
+
+
+def assert_lens_matches(node, img_w):
+    """Refuse to run unless the *running* camera is the lens the maths assumes.
+
+    A whole campaign was measured against a simulator that had never been
+    restarted: the model file said 100 degrees, the running camera was still at
+    50, and the numbers came out plausible enough to tabulate. Verifying the
+    file proves nothing -- the model is read at spawn, so only the live camera
+    is evidence. camera_info carries the focal length directly.
+    """
+    got = {}
+    sub = node.create_subscription(
+        CameraInfo, '/camera/camera_info',
+        lambda m: got.setdefault('fx', m.k[0]), 1)
+    t0 = time.time()
+    while 'fx' not in got and time.time() - t0 < 10:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    node.destroy_subscription(sub)
+    if 'fx' not in got:
+        sys.exit("/camera/camera_info gelmedi -- lens dogrulanamadan olcum yapilmaz.")
+    want = (img_w / 2.0) / math.tan(CAMERA_HFOV / 2.0)
+    if abs(got['fx'] - want) / want > 0.02:
+        live = 2 * math.atan((img_w / 2.0) / got['fx'])
+        sys.exit(
+            f"Lens uyusmuyor. Calisan kamera {math.degrees(live):.0f} derece "
+            f"(odak {got['fx']:.0f} px), matematik {math.degrees(CAMERA_HFOV):.0f} "
+            f"derece bekliyor (odak {want:.0f} px).\n"
+            "Model spawn aninda okunuyor: simulasyonu yeniden baslatin.")
+    print(f"lens dogrulandi: calisan kamera odak {got['fx']:.0f} px")
 
 
 class Grab:
@@ -207,6 +237,8 @@ def main():
     world_control(world, 'pause: true')
     if fresh(node, g, world) is None:
         sys.exit("/camera/image_raw'dan kare yok -- kopru calisiyor mu?")
+
+    assert_lens_matches(node, 1280)
 
     det = YOLOWorldDetector()
     det.set_target(TARGET_NAME)
