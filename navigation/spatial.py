@@ -297,11 +297,22 @@ def size_plausible(candidate, drone_xyz, drone_quat, target: str) -> bool:
     """Could a thing that size be the target at all?
 
     This is the filter the negative prompts were supposed to be and are not.
-    YOLO-World labels the scenario wall "cardboard box", so a negative class of
-    "wall" never fires; measured over 80 viewpoints, the wall was the
-    top-ranked candidate in 71% of them. What separates them is not the label
-    but the physics: a detection covering a third of the frame at three metres
-    is several metres across, and the user asked for a box.
+    A negative class only fires if the detector names the thing, and it does
+    not: YOLO-World labels a large flat surface "cardboard box" and a table
+    "laptop". What separates them is not the label but the physics -- a
+    detection covering a third of the frame at three metres is several metres
+    across, and the user asked for a box.
+
+    A caution about the numbers quoted below and elsewhere. Most were taken in
+    the scenario world, where the confuser that dominates is the test wall --
+    and that wall is a fixture for exercising obstacle avoidance, deliberately
+    placed between the drone and the target. It is not what a room looks like.
+    Real rooms have furniture and other objects on the same table, and their
+    walls are boundaries rather than things standing in the way. So "rejects
+    the wall" is evidence the gate works on one large confuser, not evidence it
+    is calibrated for indoor use. That calibration has to be redone in a
+    furnished scene, and until it is, the figures here should be read as a
+    lower bound on the problem rather than a description of it.
 
     Generalises past this scenario, which is the point -- in any real room
     there will be something larger than the target in view, and rejecting it
