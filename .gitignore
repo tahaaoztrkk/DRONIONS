@@ -1,6 +1,13 @@
 __pycache__/
 *.pyc
-logs/
+# Contents, not the directory itself: git does not descend into an excluded
+# directory, so a negation inside one never applies.
+logs/*
+# The measurement CSVs are results, not logs. A few kilobytes each, they are the
+# actual output of every campaign, and two have already been lost -- one to a
+# killed process, one to a scratch directory being cleared. The run log stays
+# ignored; it grows to hundreds of megabytes.
+!logs/*.csv
 models/
 # ...but not the PX4 simulation model. "models/" was meant for YOLO weights and
 # silently swallowed px4/models/ too, so the drone's own model.sdf -- camera
