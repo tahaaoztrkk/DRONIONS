@@ -52,7 +52,26 @@ WORLD = 'dronions_scenario'
 MODEL = 'x500_dronions_0'
 
 TARGET_NAME = 'box'
-TARGET_XY = (3.5, 2.0)
+TARGET_XY = (3.5, 2.0)          # where the box sits in the world file
+TARGET_MODEL = 'cardboard_box'
+
+# The box is moved between viewpoints, and this is not a refinement -- without
+# it the experiment cannot measure what it claims to.
+#
+# With the target and the user both fixed, the correct answer is the same every
+# time (4.03 m at +29.7 deg), so any arm that emits a constant near it scores
+# well without looking at anything. That is exactly what the arms appear to be
+# doing: the naive arm's errors cluster at 29.7, which is what answering "DIR=0"
+# every time produces, and the posed arm's cluster at 0.0-0.3, which is what
+# answering "DIR=30" produces. Meanwhile the geometric arm computes from the
+# image, carries detection noise, and is penalised for it.
+#
+# Moving the target makes the truth vary, so a constant cannot win. Positions
+# stay on the clear side of the wall and within the camera's reach.
+TARGET_POSITIONS = [
+    (3.5, 2.0), (4.5, 0.5), (2.8, 3.4), (4.8, 2.8), (3.0, 0.8),
+    (5.0, 1.5), (2.6, 1.2), (4.2, 3.6),
+]
 
 # Bearings the drone views the target from. Restricted to the side of the
 # scenario wall (x=1.75, y=-0.5..3.5) with clear line of sight -- viewing
@@ -123,7 +142,13 @@ def out_path_for(model, no_llm):
 # writing: a hardcoded subset silently dropped the altitude columns once, and
 # the run that was meant to verify a fix could not be verified. Failing loudly
 # on an unknown key is the opposite mistake to make.
-FIELDS = ['mismatch_deg', 'range_m', 'yaw_offset_deg', 'true_dist', 'true_brg',
+# bearing_deg is the *input* that identifies a viewpoint. Resume used to key on
+# mismatch_deg instead, which is derived from the yaw -- and once the yaw
+# gained a random offset the derived value no longer matched what resume
+# recomputed, so nothing was ever skipped and a batch silently re-measured the
+# previous day's viewpoints instead of advancing.
+FIELDS = ['bearing_deg', 'mismatch_deg', 'range_m', 'yaw_offset_deg',
+          'target_x', 'target_y', 'true_dist', 'true_brg',
           'llm_naive_dist', 'llm_naive_brg', 'llm_posed_dist', 'llm_posed_brg',
           'alt_cmd', 'alt_actual', 'alt_drop',
           'geom_area', 'geom_dist_err', 'geom_brg_err', 'geom_reason',
@@ -171,7 +196,7 @@ def load_done(path):
     for r in rows:
         if r.get('llm_naive_brg_err') or r.get('llm_posed_brg_err'):
             try:
-                done.add((float(r['mismatch_deg']), float(r['range_m'])))
+                done.add((float(r['bearing_deg']), float(r['range_m'])))
             except (KeyError, ValueError, TypeError):
                 pass
     return rows, done
@@ -181,12 +206,12 @@ def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
 
 
-def teleport(x, y, z, yaw):
+def teleport_model(name, x, y, z, yaw=0.0):
     q = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
     run(['gz', 'service', '-s', f'/world/{WORLD}/set_pose',
          '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
          '--timeout', '2000',
-         '--req', f'name: "{MODEL}" position: {{x: {x}, y: {y}, z: {z}}} '
+         '--req', f'name: "{name}" position: {{x: {x}, y: {y}, z: {z}}} '
                   f'orientation: {{x: {q[0]}, y: {q[1]}, z: {q[2]}, w: {q[3]}}}'])
 
 
@@ -360,10 +385,13 @@ def main():
     det = YOLOWorldDetector()
     det.set_target(TARGET_NAME)
 
-    true_d, true_b = relative_to_user(TARGET_XY, USER_POSITION, USER_YAW)
-    print(f"target {TARGET_NAME} at {TARGET_XY}; user at {USER_POSITION} "
-          f"facing {math.degrees(USER_YAW):.0f} deg")
-    print(f"TRUTH from the user: {true_d:.2f} m, {math.degrees(true_b):+.1f} deg\n")
+    print(f"user at {USER_POSITION} facing {math.degrees(USER_YAW):.0f} deg")
+    print(f"target moves between {len(TARGET_POSITIONS)} positions, so the "
+          f"correct answer varies:")
+    for tx, ty in TARGET_POSITIONS:
+        d, b = relative_to_user((tx, ty), USER_POSITION, USER_YAW)
+        print(f"    ({tx}, {ty}) -> {d:.2f} m, {math.degrees(b):+.1f} deg")
+    print()
     print(f"model for the LLM arms: {args.model}\n" if client else "")
 
     hdr = (f"{'mismatch':>9} | {'geom d':>7} {'geom b':>7} | "
@@ -383,24 +411,20 @@ def main():
         print(f"{sweeps} tekrar havuzlanacak\n")
     all_vps = [(b, r) for b in VIEW_BEARINGS for r in VIEW_RANGES]
     viewpoints = []
-    for b, rng in all_vps:
+    for i, (b, rng) in enumerate(all_vps):
+        tgt = TARGET_POSITIONS[i % len(TARGET_POSITIONS)]
         aa = math.radians(b)
-        dxy = (TARGET_XY[0] + rng * math.cos(aa), TARGET_XY[1] + rng * math.sin(aa))
-        if not line_blocked(dxy, TARGET_XY):
-            viewpoints.append((b, rng))
+        dxy = (tgt[0] + rng * math.cos(aa), tgt[1] + rng * math.sin(aa))
+        if not line_blocked(dxy, tgt):
+            viewpoints.append((b, rng, tgt))
     blocked = len(all_vps) - len(viewpoints)
     if done and not args.no_llm:
         before = len(viewpoints)
         # `mismatch` is what the CSV records, and it is derived from the
         # bearing, so the key has to be recomputed the same way rather than
         # compared against the raw bearing.
-        def key_of(b, r):
-            aa = math.radians(b)
-            yw = math.atan2(-r * math.sin(aa), -r * math.cos(aa))
-            mm = math.degrees(math.atan2(math.sin(yw - USER_YAW),
-                                         math.cos(yw - USER_YAW)))
-            return (round(mm, 1), float(r))
-        viewpoints = [v for v in viewpoints if key_of(*v) not in done]
+        viewpoints = [v for v in viewpoints
+                      if (round(v[0], 1), float(v[1])) not in done]
         print(f"{before - len(viewpoints)} bakis acisi onceki partilerde "
               f"olculmus, atlaniyor ({len(viewpoints)} kaldi)\n")
 
@@ -416,10 +440,14 @@ def main():
           + (f", ilk {args.limit} tanesi" if args.limit else "") + "\n")
 
     for sweep in range(sweeps):
-        for bearing, view_range in viewpoints:
+        for bearing, view_range, target_xy in viewpoints:
             a = math.radians(bearing)
             dx, dy = view_range * math.cos(a), view_range * math.sin(a)
-            drone_xy = (TARGET_XY[0] + dx, TARGET_XY[1] + dy)
+            drone_xy = (target_xy[0] + dx, target_xy[1] + dy)
+            # Move the box first, then the drone, so the frame captured after
+            # settling shows the target where the truth says it is.
+            teleport_model(TARGET_MODEL, target_xy[0], target_xy[1], 0.15)
+            true_d, true_b = relative_to_user(target_xy, USER_POSITION, USER_YAW)
             # Deterministic per viewpoint, so a resumed batch reproduces the
             # same geometry as the one it is continuing.
             rng = random.Random((YAW_OFFSET_SEED, round(bearing, 1), view_range).__hash__())
@@ -429,7 +457,7 @@ def main():
                                                math.cos(yaw - USER_YAW)))
             if args.delay:
                 time.sleep(args.delay)
-            teleport(drone_xy[0], drone_xy[1], VIEW_ALT, yaw)
+            teleport_model(MODEL, drone_xy[0], drone_xy[1], VIEW_ALT, yaw)
             settled(pose, drone_xy)
             img = fresh(node, g)
             # Where the drone *is*, read at the moment the frame arrived, not
@@ -437,11 +465,13 @@ def main():
             # unarmed and falling; measured at 0.47 m by 0.3 s.
             actual = pose.latest() if pose else None
             drone_xyz = actual if actual else (*drone_xy, VIEW_ALT)
-            row = {'mismatch_deg': round(mismatch, 1),
+            row = {'bearing_deg': round(bearing, 1),
+                   'mismatch_deg': round(mismatch, 1),
                    'range_m': view_range,
                    'yaw_offset_deg': round(math.degrees(yaw_offset), 1),
                    'true_dist': round(true_d, 2),
                    'true_brg': round(math.degrees(true_b), 1),
+                   'target_x': target_xy[0], 'target_y': target_xy[1],
                    'alt_cmd': VIEW_ALT,
                    'alt_actual': round(drone_xyz[2], 3) if actual else None,
                    'alt_drop': round(VIEW_ALT - drone_xyz[2], 3) if actual else None}
