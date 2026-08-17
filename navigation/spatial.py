@@ -194,10 +194,27 @@ def project_to_plane(drone_xyz, ray_world, plane_z: float = 0.0
 # a bounding box is far too noisy to range from directly. Values are the
 # widest face the object usually presents; the scenario box is 0.63 x 0.40 m,
 # so 0.5 is its mean aspect.
+# Widest side the object can present, not its nominal width. A detector's box
+# spans whichever dimension faces the camera, and a thing lying flat on a table
+# is usually seen across its long axis -- so a phone entered at its 0.075 m
+# width is 2.1x narrower than the 0.16 m the camera actually sees. Measured in
+# flight: the model identified the phone correctly ("the bright blue screen and
+# black bezel"), the gate computed 0.6 m against a 0.19 m ceiling, and threw the
+# confirmation away. Entering the narrow side does not make the gate stricter,
+# it makes it wrong.
+#
+# The four marked below are measured from the mesh vertices of the models
+# actually in the tabletop world rather than recalled.
 OBJECT_WIDTHS = {
-    "box": 0.50, "backpack": 0.35, "laptop": 0.33, "keyboard": 0.35,
-    "bottle": 0.08, "mug": 0.10, "phone": 0.075, "wallet": 0.10,
-    "keys": 0.06, "charger": 0.07, "mouse": 0.06,
+    "box": 0.50, "backpack": 0.35, "keyboard": 0.35,
+    "bottle": 0.08, "wallet": 0.10, "charger": 0.07, "mouse": 0.06,
+    "keys": 0.08,
+    "laptop": 0.375,        # measured, open
+    # Absent before, which meant the gate had no opinion on books at all and
+    # passed anything the detector called one.
+    "book": 0.210,          # measured, lying flat
+    "mug": 0.166,           # measured, including the handle
+    "phone": 0.160,         # measured, long side
 }
 
 # Heights the target might be resting on. Floor first: when the size check
@@ -309,6 +326,16 @@ def size_plausible(candidate, drone_xyz, drone_quat, target: str) -> bool:
     rejected on every surface; the 30% that pass are the blue distractor, which
     really is box-sized and which no size test can separate. That is what the
     colour gate and the model are for.
+
+    What it does cost is measured too, and is worth stating rather than
+    burying. A raised plane always shrinks the implied width -- that is the
+    point of it -- so it always loosens the upper bound. Asked for a phone, the
+    floor alone rejected 106 of 106 non-target detections and also the phone;
+    with raised planes 30% of them get through, all of them the blue distractor
+    seen obliquely, which from one camera genuinely could be a small object on
+    a table. Monocular geometry cannot separate those two, and pretending
+    otherwise would mean going back to rejecting the target as well. Identity
+    is the colour gate's job and the model's.
     """
     expected = OBJECT_WIDTHS.get((target or "").lower().strip())
     if not expected:
