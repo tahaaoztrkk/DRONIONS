@@ -8,10 +8,14 @@ load_dotenv()
 
 YOLO_MODEL = "yolov8x-worldv2.pt"
 DEVICE = "cuda"
-# Inference resolution. The camera publishes 1280x960, so at 640 every object
-# is halved before YOLO ever sees it -- measured, detection of the 0.63 m box
-# collapses below about 60 camera pixels, which is 30 at inference. Overridable
-# so the trade can be measured rather than argued about.
+# Inference resolution. The camera publishes 1280x960, so at 640 every object is
+# halved before YOLO ever sees it -- which looks like an obvious thing to fix
+# and is not. Measured on the same sweep (docs/PLAN_EVERYDAY_SCENARIOS.md 5f),
+# 1280 *halves* close-range recall, 8/9 to 4/9 at 2 m, and gains nothing far
+# out: the model is trained at 640 and running it wider moves objects outside
+# the scale distribution it expects. Kept overridable so this stays checkable
+# rather than remembered, but 640 is the measured optimum, not a default nobody
+# revisited.
 IMAGE_SIZE = int(os.getenv("DRONIONS_IMAGE_SIZE", "640"))
 CAMERA_SOURCE = "http://10.116.143.7:8080/video"
 CONFIDENCE_THRESHOLD = 0.15
