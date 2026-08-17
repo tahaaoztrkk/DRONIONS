@@ -13,7 +13,14 @@
 #   scripts/run_sim_chain.sh                 # headless, target "box"
 #   HEADLESS=0 scripts/run_sim_chain.sh      # with the Gazebo GUI
 #   DRONIONS_TARGET=cup scripts/run_sim_chain.sh
+#   WORLD=dronions_tabletop scripts/run_sim_chain.sh   # the table scene
 #   LOGDIR=/tmp/mylogs scripts/run_sim_chain.sh
+#
+# WORLD drives both halves and they have to agree: PX4 picks the world by make
+# target, and the bridge subscribes to gz topics whose paths contain the world
+# name. Setting only one of them starts a simulation that publishes nothing the
+# node can see -- which looks exactly like a camera failure and wasted a couple
+# of runs before it was traced.
 #
 # Logs land in $LOGDIR as px4.log / mavros.log / bridge.log / node.log.
 # Deliberately not 'set -u': /opt/ros/.../setup.bash reads unbound variables,
@@ -25,7 +32,8 @@ LOGDIR="${LOGDIR:-/tmp/dronions-sim}"
 PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
 DRONIONS_DIR="${DRONIONS_DIR:-$HOME/DRONIONS}"
 TARGET="${DRONIONS_TARGET:-box}"
-MAKE_TARGET="${MAKE_TARGET:-gz_x500_dronions_dronions_scenario}"
+WORLD="${WORLD:-dronions_scenario}"
+MAKE_TARGET="${MAKE_TARGET:-gz_x500_dronions_$WORLD}"
 # Seconds to wait after the node starts before typing the target, so the drone
 # is airborne and searching first.
 COMMAND_DELAY="${COMMAND_DELAY:-50}"
@@ -73,7 +81,8 @@ script -qfec "ros2 launch mavros px4.launch fcu_url:=udp://:0@127.0.0.1:14580" \
     "$LOGDIR/mavros.log" &
 
 cd "$DRONIONS_DIR"
-ros2 launch "$DRONIONS_DIR/ros/launch/dronions_px4_bridge.launch.py" > "$LOGDIR/bridge.log" 2>&1 &
+ros2 launch "$DRONIONS_DIR/ros/launch/dronions_px4_bridge.launch.py" \
+    world:="$WORLD" > "$LOGDIR/bridge.log" 2>&1 &
 
 until grep -q "Got HEARTBEAT, connected" "$LOGDIR/mavros.log" 2>/dev/null; do sleep 0.5; done
 echo "[chain] MAVROS connected $(date +%T)"
@@ -81,6 +90,7 @@ echo "[chain] MAVROS connected $(date +%T)"
 source venv/bin/activate
 if [ "$INTERACTIVE" = "1" ]; then
     echo "[chain] node in foreground $(date +%T) -- type commands below."
+    echo "[chain]   dunya: $WORLD"
     echo "[chain]   'kutuyu bul' -> Enter onaylar, 'h' iptal eder, 'q' kapatir."
     # No pipe on stdin: the dialogue layer asks for confirmation and expects
     # follow-up questions, so the node needs the real keyboard. 'script' still

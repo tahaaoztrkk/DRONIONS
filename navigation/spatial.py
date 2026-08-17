@@ -203,7 +203,11 @@ OBJECT_WIDTHS = {
 # Heights the target might be resting on. Floor first: when the size check
 # cannot separate two planes, the floor is the safer answer, because it is
 # where most things are and where an over-estimate is smallest.
-SUPPORT_HEIGHTS = (0.0, 0.75, 0.45)     # floor, table/counter, seat/low shelf
+# floor, table/counter, desk/worktop, seat/low shelf. The 1.0 m entry is the
+# table in the tabletop world, measured rather than assumed -- without it the
+# nearest plane on file was 0.75 and everything on that table was placed a
+# quarter of a metre too near.
+SUPPORT_HEIGHTS = (0.0, 0.75, 1.0, 0.45)
 
 # A raised surface must fit the apparent size this many times better than the
 # floor before it is believed.
