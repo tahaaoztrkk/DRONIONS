@@ -242,6 +242,88 @@ distributions rather than medians.
 
 ---
 
+## 5b-final. S3 complete: geometry against the language model (n=39)
+
+The pilot in §5b is **withdrawn**. Its geometric figure of 13.2 deg was computed
+from the pose the drone had been *commanded* to, and a teleported airframe is
+unarmed and falling -- 0.47 m lost by 0.3 s, on the ground by 1.0 s. Every
+estimate in it came from an altitude the vehicle no longer had. Four further
+flaws were found and fixed before this run; they are listed below because each
+one could have reversed the conclusion and none announced itself.
+
+### Setup
+
+The user stands at the origin facing north. The target box is teleported between
+eight positions, so the correct answer varies from +6.3 to +50.5 deg. The drone
+views it from 13 bearings and 3 ranges (2, 3, 4 m), each with a fixed
+pseudo-random yaw offset of up to 26 deg so the target is in frame but never on
+the boresight. Viewpoints whose line of sight crosses the wall are dropped.
+Three methods answer the same question from the same frame.
+
+### Result
+
+| | bearing error | IQR | max | distance | coverage |
+|---|---|---|---|---|---|
+| **geometric** | **6.4°** | 4.5–8.9 | 14.4 | 0.42 m | 35/39 (90%) |
+| LLM, camera only | 28.0° | 14.3–41.0 | 65.5 | 1.82 m | 32/39 (82%) |
+| LLM, given the poses | 10.7° | 5.3–22.9 | 58.5 | 0.74 m | 27/39 (69%) |
+
+On the 29 viewpoints where both the geometric method and the camera-only LLM
+answered, geometry was closer on **25 of 29**. Wilcoxon signed-rank:
+**z = −4.36, p = 1.3 × 10⁻⁵**.
+
+### What the numbers say
+
+**The comparison that matters is the camera-only arm**, because that is the
+information a vision pipeline actually has. It is four and a half times the
+geometric error, and the interquartile ranges (4.5–8.9 against 14.3–41.0) do
+not overlap.
+
+**The failure is directional, not noisy.** The target was to the user's left on
+every viewpoint. The camera-only arm answered to the *right* on roughly half of
+them. That is the frame mismatch the reference work names as the cause of its
+weakest score, observed directly: the model reports what the camera sees rather
+than transposing it into the user's frame. For a blind user the difference
+between "on your right" and "on your left" is not an error bar, it is walking
+the wrong way.
+
+**Being given the poses helps but does not close the gap** (10.7 vs 6.4), and
+it is not an alternative anyway: those poses are exactly what the geometric
+method computes. In a deployed system the same code would have to produce them
+before the model could be told them. It is geometry with an LLM on top, not
+instead of.
+
+**Coverage is a result, not a shortfall.** The geometric method declines when
+the ray is too shallow to trust -- 90% coverage -- rather than inventing a
+number for someone who cannot check it. The LLM given poses answered only 69%
+of the time, so the model's willingness to answer is not improved by knowing
+where it is.
+
+### Five flaws found in the measurement itself
+
+Recorded because each was silent and each produced plausible numbers:
+
+1. **Commanded pose, not actual.** Fixed by reading Gazebo's own pose at the
+   moment of capture (verified: 1.99 m against 2.0 commanded).
+2. **Viewpoints looking through the wall**, producing 170–190 deg errors that
+   were the wall being detected as the box. Screened geometrically.
+3. **Stale frames.** Two API calls take seconds, the camera keeps publishing,
+   and a queue ten deep held only pre-teleport frames -- so the model was shown
+   the previous viewpoint. Reproduced with an artificial delay (62% coverage
+   with none, 0% with ten seconds), fixed with a depth-1 queue and a drain.
+4. **The drone aimed exactly at the target**, and the posed prompt gives it the
+   drone's heading -- so that arm could answer by arithmetic without looking.
+5. **The target never moved**, so the correct answer was the same every time and
+   any arm emitting a constant scored well. Both LLM arms were doing exactly
+   that: naive clustered at 29.7 (answering "straight ahead"), posed at 0.0–0.3
+   (answering "30"). Only visible because the raw answers were recorded, not
+   just their errors.
+
+The last two would each have inverted the headline. They are the reason this
+section reports a design as well as a number.
+
+---
+
 ## 5c. Scaling the pilot: what the measurement actually cost
 
 Turning the n=6 pilot into a defensible number exposed four flaws in the *rig*,
