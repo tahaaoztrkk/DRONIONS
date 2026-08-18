@@ -251,7 +251,18 @@ STRAY_REPORT_INTERVAL = 5.0     # s
 # Climbing also clears the obstacle by itself -- the lidar is horizontal and
 # rides with the airframe, so once above the wall it stops seeing it.
 SEARCH_CLIMB_STEP = 1.5     # m gained per blocked attempt
-MAX_SEARCH_ALTITUDE = 5.5   # m ceiling for the climb-and-look-over
+# Ceiling for the climb-and-look-over, and it has to follow the room.
+#
+# Climbing over an obstacle is an outdoor answer. A 5.5 m ceiling in a 5 x 4 m
+# room with 2.5 m walls means the sweep leaves the room: measured, the drone
+# climbed to 3.5 m, flew out over the east wall to (5.0, -2.6), and hung there
+# unable to descend because the wall was underneath it -- confirming the mug
+# three times from a place it could not get down from. Indoors there is no
+# "over", only "around".
+#
+# Set below the walls for an enclosed scene, and above them for the scenario
+# world, whose 3 m test wall the sweep is meant to clear.
+MAX_SEARCH_ALTITUDE = float(os.getenv("DRONIONS_MAX_SEARCH_ALT", "5.5"))
 
 # Altitude hold / takeoff. HOVER_ALTITUDE is tunable -- revisit alongside
 # obstacle_wall's height (Milestone B) since a hovering quad can simply fly
@@ -324,6 +335,18 @@ FLOOR_LEVEL_MAX = 0.35
 # depression angle, which lifts the target in frame, and it is the safe
 # direction to move when something is that close.
 CENTER_BACKOFF_SPEED = 0.15     # m/s
+
+# ...and the opposite move, for the opposite reason.
+#
+# "Cannot descend" has two causes that want different answers. Sitting at the
+# clamp above the target's own surface means the drone is as low as it should
+# get and the target is simply too close to frame -- backing off fixes that.
+# Being refused by ground clearance means something is underneath that is not
+# the target's surface, and the way out is forward, over it, toward the target.
+# The log already said "once ileri" and nothing moved the drone forward:
+# measured, it hung at 2.8 m above a wall for thirty seconds, confirming the
+# mug three times from a place it could not get down from, and then gave up.
+CENTER_ADVANCE_SPEED = 0.18     # m/s
 # How far (normalized image units) a YOLO detection may sit from the centre
 # Gemini reported and still count as the same object. Beyond this the two
 # perception layers simply disagree about what is in the frame.
@@ -1316,6 +1339,7 @@ def main():
     last_seen_xy = None
     last_seen_at = 0.0
     target_surface_z = None
+    clearance_advance_log_after = 0.0
     previous_phase = PHASE_SEARCH
     target = None
     camera_warned = False
@@ -1913,19 +1937,32 @@ def main():
                             - (err_y / 0.5) * TRACK_ALT_RATE * dt)
                     # Same floor as the approach: never below the surface the
                     # target is standing on.
-                    blocked = False
+                    at_surface = False
                     if target_surface_z is not None:
                         floor = target_surface_z + TARGET_SURFACE_CLEARANCE
                         if want < floor:
                             want = max(node.target_altitude(), floor)
-                            blocked = True
-                    if (want < node.current_altitude()
-                            and node.ground_clearance() < MIN_GROUND_CLEARANCE):
-                        blocked = True
+                            at_surface = True
+                    ground_blocked = (want < node.current_altitude()
+                                      and node.ground_clearance()
+                                      < MIN_GROUND_CLEARANCE)
                     node.set_target_altitude(want)
-                    # Nowhere left to go but backwards. Without this the loop
-                    # simply waits out the centring deadline and starts over.
-                    if blocked and err_y > 0:
+                    # Nowhere left to go but sideways, and which way depends on
+                    # why. Without either, the loop just waits out the centring
+                    # deadline and starts the whole cycle again.
+                    if ground_blocked and not node.obstacle_ahead():
+                        # Something underneath that is not the target's own
+                        # surface. Forward clears it; centring has already
+                        # yawed towards the target, so forward is towards it.
+                        twist.linear.x = CENTER_ADVANCE_SPEED
+                        if time.time() > clearance_advance_log_after:
+                            log_event(
+                                f"Altimda {node.ground_clearance():.2f} m bosluk "
+                                f"var, inemiyorum -- hedefe dogru ilerleyip "
+                                f"ustunden geciliyor.")
+                            clearance_advance_log_after = (
+                                time.time() + CLEARANCE_LOG_INTERVAL)
+                    elif at_surface and err_y > 0:
                         twist.linear.x = -CENTER_BACKOFF_SPEED
 
                 node.set_desired_twist(twist)

@@ -33,6 +33,14 @@ PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
 DRONIONS_DIR="${DRONIONS_DIR:-$HOME/DRONIONS}"
 TARGET="${DRONIONS_TARGET:-box}"
 WORLD="${WORLD:-dronions_scenario}"
+# Climbing over what blocks you is an outdoor answer. The room has 2.5 m walls
+# and the sweep's 5.5 m ceiling flew straight over them, leaving the drone
+# outside hovering above a wall it could not descend past. Enclosed scenes get
+# a ceiling under the walls; the scenario world keeps the high one, since its
+# 3 m test wall is there to be climbed.
+case "$WORLD" in
+    *room*) export DRONIONS_MAX_SEARCH_ALT="${DRONIONS_MAX_SEARCH_ALT:-2.1}" ;;
+esac
 MAKE_TARGET="${MAKE_TARGET:-gz_x500_dronions_$WORLD}"
 # Seconds to wait after the node starts before typing the target, so the drone
 # is airborne and searching first.
