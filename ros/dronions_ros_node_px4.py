@@ -1981,7 +1981,15 @@ def main():
                                 f"ustunden geciliyor.")
                             clearance_advance_log_after = (
                                 time.time() + CLEARANCE_LOG_INTERVAL)
-                    elif (at_surface or own_surface) and err_y > 0:
+                    elif (at_surface or (ground_blocked and own_surface)) \
+                            and err_y > 0:
+                        # As low as it is allowed to get and the target is
+                        # still low in frame. Note this needs the descent to be
+                        # actually refused, not merely that the floor below
+                        # happens to be the target's surface -- for a target on
+                        # the floor that is true from the moment it is spotted,
+                        # and backing off then would keep the drone from ever
+                        # closing in.
                         twist.linear.x = -CENTER_BACKOFF_SPEED
 
                 node.set_desired_twist(twist)
