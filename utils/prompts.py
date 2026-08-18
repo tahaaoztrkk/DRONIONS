@@ -40,6 +40,47 @@ PROMPT_DATABASE: Dict[str, List[str]] = {
         "white charger"
     ],
 
+    # The room's objects were all reachable by a single word until a flight
+    # showed what that costs: the phone was only ever found as "smartphone",
+    # never as "phone". A target with one prompt is a target the detector gets
+    # one chance at, and open-vocabulary detection is sensitive to the exact
+    # wording in a way no confidence threshold compensates for.
+    "mug": [
+        "mug",
+        "coffee mug",
+        "cup",
+        "coffee cup",
+        "ceramic mug",
+        "teacup"
+    ],
+
+    "book": [
+        "book",
+        "hardcover book",
+        "paperback book",
+        "closed book",
+        "textbook",
+        "novel"
+    ],
+
+    "bowl": [
+        "bowl",
+        "cereal bowl",
+        "ceramic bowl",
+        "white bowl",
+        "dish",
+        "soup bowl"
+    ],
+
+    "headphones": [
+        "headphones",
+        "headset",
+        "over-ear headphones",
+        "gaming headset",
+        "black headphones",
+        "earphones"
+    ],
+
     "phone": [
         "phone",
         "smartphone",
@@ -116,6 +157,44 @@ NEGATIVE_DATABASE: Dict[str, List[str]] = {
         "surge protector"
     ],
 
+    # What each of these gets confused with from a drone's viewpoint, which is
+    # from above and at an angle. A mug seen from overhead is a dark circle and
+    # a bowl is a light one; a book lying flat and a closed laptop are the same
+    # rectangle. Giving the detector somewhere else to put those keeps them off
+    # the target's class instead of forcing a best-positive match.
+    "mug": [
+        "bowl",
+        "can",
+        "vase",
+        "flower pot",
+        "lid"
+    ],
+
+    "book": [
+        "laptop",
+        "keyboard",
+        "tablet",
+        "magazine",
+        "notebook computer",
+        "placemat"
+    ],
+
+    "bowl": [
+        "plate",
+        "mug",
+        "lid",
+        "saucer",
+        "paper"
+    ],
+
+    "headphones": [
+        "bag",
+        "cushion",
+        "shoe",
+        "cable",
+        "hat"
+    ],
+
     "phone": [
         "tablet",
         "remote control"
@@ -183,3 +262,26 @@ def get_negative_prompts(target: str) -> List[str]:
     target = target.lower().strip()
 
     return NEGATIVE_DATABASE.get(target, [])
+
+
+def _check_databases() -> None:
+    """A word cannot be both what to look for and what to ignore.
+
+    The detector hands positives and negatives to the model as one class list
+    and then drops every box that landed in a negative class, so a word in both
+    lists removes the target from its own detections. That happened: four
+    entries meant for PROMPT_DATABASE were pasted into NEGATIVE_DATABASE as
+    well -- the key `"phone": [` appears in both dictionaries and a replace
+    without a count hit both -- and the mug went from being found at 0.78 to
+    not being found at all. Nothing raised; it read as the detector simply
+    failing on those objects.
+    """
+    for target, positives in PROMPT_DATABASE.items():
+        clash = set(positives) & set(NEGATIVE_DATABASE.get(target, []))
+        if clash:
+            raise ValueError(
+                f"'{target}' hem pozitif hem negatif ifade tasiyor: "
+                f"{sorted(clash)}. Bu hedefi kendi tespitlerinden eler.")
+
+
+_check_databases()

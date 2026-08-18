@@ -41,7 +41,16 @@ TR_TARGETS = {
     "sırt çantası": "backpack", "çanta": "backpack",
     "şarj aleti": "charger", "şarj": "charger",
     "klavye": "keyboard", "fare": "mouse", "laptop": "laptop",
+    "kitap": "book", "defter": "book",
+    "kase": "bowl", "kâse": "bowl", "kâse": "bowl",
 }
+
+# Final p, ç, t, k soften to b, c, d, ğ before a vowel-initial suffix:
+# "kitap" + "ı" is "kitabı", so stripping the suffix leaves "kitab", which is
+# in no dictionary. Without this the lexicon is searched for a word Turkish
+# never writes, and "kitabı bul" reached the detector as the literal string
+# "kitab" -- one weak prompt instead of the book entry.
+_TR_SOFTENED = {"b": "p", "c": "ç", "d": "t", "ğ": "k", "g": "k"}
 
 # Endings that attach to the object in Turkish, grouped by how confident a
 # strip is. Ordering matters more than the list itself: "sandalyeyi" ends in
@@ -107,6 +116,15 @@ def _tr_stems(word: str):
                     out.append(stem)
                     nxt.append(stem)
         frontier = nxt
+    # Undo the consonant softening as well, offered alongside the plain stem
+    # rather than instead of it: "kitab" gives "kitap", but a root that really
+    # ends in one of these letters must still be able to match itself.
+    for stem in list(out):
+        hard = _TR_SOFTENED.get(stem[-1:])
+        if hard:
+            candidate = stem[:-1] + hard
+            if candidate not in out:
+                out.append(candidate)
     return out
 
 
