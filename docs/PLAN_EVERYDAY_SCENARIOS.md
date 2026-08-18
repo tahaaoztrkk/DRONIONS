@@ -523,85 +523,103 @@ the fan was wide enough to see past it.
 
 ---
 
-## 5f. Result: how small an object the detector can find
+## 5f. How small an object the drone can find
 
-Every indoor scenario turns on this and none of them could be planned without
-it. Rather than introduce a cup -- which changes class, texture and shape at
-once -- only apparent size was varied: the same scenario box, viewed from
-further away. Apparent size goes as 1/range, so the 0.63 m box at 10 m subtends
-what a 0.12 m cup does at 2 m, with no new assets and no confound.
+Every indoor scenario turns on this and none can be planned without it. This
+section was rewritten after the rig that produced its first version turned out
+to be wrong in four separate ways; what follows separates what was measured on
+a rig that checks itself from what was not.
 
-Detection is counted only when the candidate **projects to where the box
-actually is**. Screening on frame position instead passed the wall on every
-single sample -- the drone is aimed at the box, so the wall behind it sits in
-the centre too -- and reported a flawless 100%. The giveaway was printing the
-expected pixel width alongside: geometry predicts 28 px at 12 m and the
-"detections" measured 169, an object 2.2 m across.
+### What the measurement had to survive
 
-| range | apparent width | recall |
-|---|---|---|
-| 2 m | 120 px | 8/9 |
-| 3 m | 94 px | 7/9 |
-| 4 m | 76 px | 5/9 |
-| 5 m | 63 px | 3/9 |
-| 6.5 m | 50 px | 2/9 |
-| 8 m | 41 px | 1/9 |
-| 10 m | 33 px | **0/9** |
-| 12 m | 28 px | **0/9** |
+Each fault was silent and each produced a plausible table.
 
-Recall halves by about 76 px and reaches zero below roughly 35 px.
+**The drone was never at the stated altitude.** It is disarmed, so a teleport to
+2 m is a drop -- on the ground 0.9 s later -- and waiting for a "settled" frame
+guaranteed a settled *grounded* one. Physics is now paused and stepped, and the
+measured altitude is 1.98 m.
 
-### Raising the inference resolution makes it worse
+**Scoring was impossible past 10 m.** Detections were located by casting a ray
+from the box's bottom edge down to the ground, and that refuses rays shallower
+than five times the altitude -- correctly, since such a ray is mostly noise. So
+every viewpoint beyond 10 m scored zero whatever the camera saw. Scoring now
+projects the box's known position *into* the frame, which has no shallow-ray
+problem at any range.
 
-The camera publishes 1280×960 while inference runs at 640, so every object is
-halved before the model sees it. Doubling `IMAGE_SIZE` looked like the obvious
-lever. Measured, it is not:
+**A whole lens campaign ran against a simulator that had never restarted.** The
+model file said 100 degrees, the running camera was still at 50, and the numbers
+looked reasonable enough to tabulate. The experiment now reads focal length off
+`/camera/camera_info` and refuses to run on a mismatch: verifying the file
+proves nothing, because the model is read at spawn.
 
-| range | imgsz 640 | imgsz 1280 |
-|---|---|---|
-| 2 m | 8/9 | 4/9 |
-| 3 m | 7/9 | 5/9 |
-| 4 m | 5/9 | 3/9 |
-| 5 m | 3/9 | 1/9 |
-| 8 m and beyond | 1/9, 0 | 1/9, 0 |
+**Velocity accumulated across viewpoints.** `set_pose` moves the model but
+leaves its speed, so each capture fell further than the last -- 2 cm, then 5,
+then 9, accelerating. The drone is now touched down between viewpoints so
+contact zeroes it.
 
-Worse at close range, no better at long. YOLO-World is trained at 640 and
-running it at 1280 moves objects outside the scale distribution it expects. The
-setting is now overridable so this stays checkable, but the default stands.
+Only measurements taken after all four fixes are quoted as results below. The
+earlier scenario-world curves are gone rather than corrected, because their
+errors are not a constant offset.
 
-### What this means for the scenario set
+### Result: a table changes the answer, texture decides it
 
-Turning the pixel thresholds into working distances:
+Measured on a table with no wall behind it, using downloaded scanned meshes,
+with the drone at flyable standoffs (0.6 m clear of the table surface):
 
-| object | width | 89% recall | 56% recall | zero below |
-|---|---|---|---|---|
-| scenario box | 0.63 m | 2.8 m | 4.5 m | 9.7 m |
-| backpack | 0.35 m | 1.6 m | 2.5 m | 5.4 m |
-| laptop | 0.33 m | 1.5 m | 2.3 m | 5.1 m |
-| **cup** | 0.12 m | **0.5 m** | 0.9 m | 1.9 m |
-| phone | 0.075 m | 0.34 m | 0.5 m | 1.2 m |
-| keys | 0.06 m | 0.27 m | 0.4 m | 0.9 m |
+| object | width | 1.1 m | 1.4 m | 1.8 m | 2.3 m | 3.0 m |
+|---|---|---|---|---|---|---|
+| laptop | 0.375 m | 9/9 | 9/9 | 9/9 | 9/9 | 9/9 |
+| mug | 0.166 m | 3/9 | 3/9 | 0/9 | 0/9 | 0/9 |
+| phone | 0.160 m | 0/9 | 0/9 | 0/9 | 0/9 | 0/9 |
 
-**S1 as written -- "find my cup in this room" -- is not reachable by search.**
-The drone would have to be within half a metre of the cup to see it reliably,
-which is an inspection, not a search. Keys and a phone are further out of reach
-still.
+**A mug goes from impossible to marginal.** One look in three, and a sweep
+produces many looks. The table is what does it: it lifts the object a metre
+closer, which is worth more than either camera change tried -- raising
+inference resolution halved close-range recall, and halving the field of view
+cost two thirds of it.
 
-Three ways forward, in order of honesty:
+**A phone stays out of reach.** It scores 3/9 at 0.7 m, but the drone cannot be
+there: 0.30 m above the table, inside the envelope where flights have crashed.
+The mug and phone are nearly the same width, so width is not what separates
+them -- a phone seen from above is a flat rectangle with nothing distinctive
+about it.
 
-1. **Choose objects the perception can handle.** A backpack or laptop is
-   detectable at 1.5-2.5 m, which a sweep can deliver. S1 becomes "find my
-   backpack", mirrors the same reference task, and is measurable today.
-2. **Ask the VLM on the whole frame** rather than gating on YOLO. Gemini can
-   find a cup in an image the detector cannot, but at one API call per look and
-   20 a day, a sweep cannot be driven that way.
-3. **A close-up second pass** once the drone is near a surface -- which needs
-   the indoor scene first, and would be a genuine contribution rather than a
-   workaround.
+**Untextured objects are not detected at all, at any size.** The first version
+of this scene used flat coloured primitives and scored 0/9 everywhere,
+including a "laptop" 253 px wide. The detector saw it perfectly well: prompted
+with "rectangle" it returned a 167 px box exactly where the object was;
+prompted with "laptop" it returned the table. Swapping in scanned meshes took
+the same laptop from 0/9 to 9/9 at 0.92 confidence. **This is most of the cost
+of building an indoor scene** -- not the number of objects but their realism.
 
-The measured floor is the finding either way: **this camera at this altitude
-cannot search for objects below roughly 0.3 m**, and no amount of prompt or
-threshold tuning changes that.
+### What is deliberately not claimed
+
+There is no general "recall collapses below N pixels" figure here any more. The
+one that used to be is gone, because it came from the scenario world, where the
+target stands in front of a 3 m test wall -- and that wall is a fixture for
+exercising obstacle avoidance, put there on purpose, not a feature of any room.
+The detector prefers it to the target at every range past 2 m, so that curve
+measured the wall as much as it measured the object. On a clean table the
+laptop is found at 67 px, smaller than the size at which the box had supposedly
+already collapsed.
+
+The threshold has to be measured again in a furnished room, where the confusers
+are furniture and the other things on the same table. Until then the honest
+statement is an ordering rather than a number: **laptop-sized works, mug-sized
+is marginal and needs a close pass, phone-sized and below does not.**
+
+### What it means for S1
+
+"Find my mug in this room" is reachable, on three conditions:
+
+1. The mug is on a raised surface rather than the floor.
+2. The scene is built from recognisable meshes.
+3. The search is two-stage -- find the table first, which is detectable from
+   across the room, then sweep its surface. A single-altitude sweep never gets
+   close enough to see the mug, and it cannot approach what it has not detected.
+
+Keys and a phone stay out of scope, and that is a camera-and-airframe limit
+rather than a tuning one: seeing them needs the drone closer than it is wide.
 
 ---
 
