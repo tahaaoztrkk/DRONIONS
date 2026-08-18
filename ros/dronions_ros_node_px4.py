@@ -2216,8 +2216,19 @@ def main():
                         # to searching there just climbs, re-acquires the same
                         # laptop and stops at the same table edge: measured on
                         # three runs out of four.
-                        on_surface = (tgt_world is not None
-                                      and tgt_world[2] > FLOOR_LEVEL_MAX)
+                        # The height settled when the target was confirmed,
+                        # not one recomputed here. Close in, the ray through
+                        # the bbox bottom is steep and the floor and table hits
+                        # converge, so the plane choice flips frame to frame:
+                        # measured, the same laptop was reported "at table
+                        # height" on approach and read as floor-level twelve
+                        # seconds later, which skipped this branch entirely and
+                        # sent the drone back to the sweep. The confirmation
+                        # viewpoint is the one that had the evidence.
+                        on_surface = (target_surface_z is not None
+                                      and target_surface_z > FLOOR_LEVEL_MAX)
+                        if target_surface_z is None and tgt_world is not None:
+                            on_surface = tgt_world[2] > FLOOR_LEVEL_MAX
                         if on_surface:
                             dialogue.say("Hedefe yaklaşamıyorum, bir yüzeyin "
                                          "üstünde ve önümde engel var. "
