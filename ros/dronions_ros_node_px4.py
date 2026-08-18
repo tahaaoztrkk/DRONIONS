@@ -129,6 +129,12 @@ from ui.overlay import draw_overlay
 PHASE_SEARCH = "VLM SEARCHING"
 PHASE_CENTER = "CENTERING"
 PHASE_TRACK = "YOLO TRACKING"
+# Arrival used to change nothing but a flag: the drone announced it and carried
+# straight on tracking. Measured on a laptop, that is where the run came apart
+# -- it arrived at 1.6 m, kept chasing, the detection grew to cover the table
+# and the size check dropped it, and it spent the next minute confirming the
+# same laptop five times over. The task was already finished at the first line.
+PHASE_DONE = "ARRIVED"
 
 # Horizontal pursuit speeds -- identical meaning to the ground rig
 # (navigator.py's turn/throttle output is unchanged). Interpreted in
@@ -300,6 +306,19 @@ ARRIVAL_MAX_DISTANCE = 2.5
 # servo can simply be told not to go below it. Same margin as the ground
 # clearance it mirrors.
 TARGET_SURFACE_CLEARANCE = 0.60
+
+# Backing off is the third way to centre a target, and the only one left once
+# the drone is close.
+#
+# Centring could yaw and it could change altitude, and both stop working at
+# short range: an object low in frame is centred by descending, and over a
+# table that descent is refused. Measured on a laptop -- the drone hovered at
+# 1.4 m with 0.5 m of clearance below, the laptop at y=0.90, centring timing
+# out and the whole confirm-approach cycle repeating five times on the object
+# it had already arrived at, one API call each. Retreating lowers the
+# depression angle, which lifts the target in frame, and it is the safe
+# direction to move when something is that close.
+CENTER_BACKOFF_SPEED = 0.15     # m/s
 # How far (normalized image units) a YOLO detection may sit from the centre
 # Gemini reported and still count as the same object. Beyond this the two
 # perception layers simply disagree about what is in the frame.
@@ -1401,6 +1420,14 @@ def main():
                     gemini_point = None
                     gemini_area = 0.0
                     vlm_errors = 0
+                    # Arrival is sticky by design -- it must not un-announce
+                    # itself when the area estimate dithers -- so a new target
+                    # has to clear it explicitly. Left set, the drone would
+                    # reach the next object and never stop, since stopping is
+                    # what the arrival branch now does.
+                    announced_arrival = False
+                    last_seen_xy = None
+                    target_surface_z = None
                     node.set_target_altitude(HOVER_ALTITUDE)
                 elif act['action'] == 'cancel':
                     target = None
@@ -1469,6 +1496,19 @@ def main():
             if pose_stale:
                 pose_stale = False
                 log_event("Konum akisi geri geldi.")
+
+            if current_phase == PHASE_DONE:
+                # Hold where it arrived and answer questions about what it
+                # found. A new command is what starts anything moving again;
+                # the intake above runs before this and sets the phase itself.
+                # No frame is read here: nothing is being looked for, and
+                # holding the last one on screen says exactly that.
+                node.set_desired_twist(
+                    hold_altitude_twist(node.current_altitude()))
+                if (cv2.waitKey(30) & 0xFF) == ord('q'):
+                    break
+                previous_phase = current_phase
+                continue
 
             if current_phase == PHASE_SEARCH and previous_phase != PHASE_SEARCH:
                 # Just lost it. Whatever broke the track -- drifting out of
@@ -1860,12 +1900,29 @@ def main():
                 now = time.time()
                 dt = min(0.2, now - last_alt_update)
                 last_alt_update = now
-                if abs(err_y) > TRACK_VERTICAL_DEADBAND:
-                    node.set_target_altitude(
-                        node.target_altitude() - (err_y / 0.5) * TRACK_ALT_RATE * dt)
-
                 twist = Twist()
                 twist.angular.z = -MAX_ANGULAR * max(-1.0, min(1.0, err_x / 0.5))
+
+                if abs(err_y) > TRACK_VERTICAL_DEADBAND:
+                    want = (node.target_altitude()
+                            - (err_y / 0.5) * TRACK_ALT_RATE * dt)
+                    # Same floor as the approach: never below the surface the
+                    # target is standing on.
+                    blocked = False
+                    if target_surface_z is not None:
+                        floor = target_surface_z + TARGET_SURFACE_CLEARANCE
+                        if want < floor:
+                            want = max(node.target_altitude(), floor)
+                            blocked = True
+                    if (want < node.current_altitude()
+                            and node.ground_clearance() < MIN_GROUND_CLEARANCE):
+                        blocked = True
+                    node.set_target_altitude(want)
+                    # Nowhere left to go but backwards. Without this the loop
+                    # simply waits out the centring deadline and starts over.
+                    if blocked and err_y > 0:
+                        twist.linear.x = -CENTER_BACKOFF_SPEED
+
                 node.set_desired_twist(twist)
 
                 if abs(err_x) < CENTER_OK and abs(err_y) < CENTER_OK:
@@ -2221,6 +2278,17 @@ def main():
                                   f"({node.current_altitude():.1f}m)")
                         print(f"\n[✓] Hedefe varıldı: {target}")
                         speak(f"{target} hedefine varıldı.")
+                        # Done means done. Continuing to chase something the
+                        # drone is already on top of is what produced the loop
+                        # above: too close to centre, too low to descend, so
+                        # centring times out and the whole confirm-approach
+                        # cycle repeats on the object it has already found.
+                        target_last = target
+                        current_phase = PHASE_DONE
+                        node.set_target_altitude(node.current_altitude())
+                        node.set_desired_twist(
+                            hold_altitude_twist(node.current_altitude()))
+                        continue
                     # Deliberately not cleared when `arrived` goes false again:
                     # relative_area sits right on ARRIVAL_RELATIVE_AREA and
                     # dithers across it, which announced arrival over and over.
