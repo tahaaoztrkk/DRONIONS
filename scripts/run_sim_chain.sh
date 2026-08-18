@@ -41,7 +41,20 @@ HEADLESS="${HEADLESS:-1}"
 INTERACTIVE="${INTERACTIVE:-0}"
 
 mkdir -p "$LOGDIR"
-rm -f "$LOGDIR"/px4.log "$LOGDIR"/mavros.log "$LOGDIR"/bridge.log "$LOGDIR"/node.log
+# Keep the previous run instead of deleting it. Behaviour here is intermittent
+# -- the same command arrives on one run in four -- so the interesting question
+# is almost always "what was different last time", and that was unanswerable
+# while every start wiped the evidence. Three runs were lost that way.
+if [ -f "$LOGDIR/node.log" ]; then
+    PREV="$LOGDIR/$(date -r "$LOGDIR/node.log" +%Y%m%d-%H%M%S)"
+    mkdir -p "$PREV"
+    for f in px4 mavros bridge node; do
+        [ -f "$LOGDIR/$f.log" ] && mv "$LOGDIR/$f.log" "$PREV/$f.log"
+    done
+    echo "[chain] onceki kosu -> $PREV"
+fi
+# Old runs are worth keeping, but not forever: px4.log alone reaches tens of MB.
+ls -1dt "$LOGDIR"/*/ 2>/dev/null | tail -n +11 | xargs -r rm -rf
 
 cleanup() {
     # gz sim is launched with & inside PX4's own script and survives SIGINT,

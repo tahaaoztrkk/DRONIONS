@@ -307,6 +307,11 @@ ARRIVAL_MAX_DISTANCE = 2.5
 # clearance it mirrors.
 TARGET_SURFACE_CLEARANCE = 0.60
 
+# Above this the target is standing on something rather than on the floor.
+# Well clear of the floor objects the estimate places at 0.15-0.30 m, and well
+# below the lowest surface on file at 0.45 m.
+FLOOR_LEVEL_MAX = 0.35
+
 # Backing off is the third way to centre a target, and the only one left once
 # the drone is close.
 #
@@ -2202,12 +2207,35 @@ def main():
                                f"hedef {tgt_dist:.1f} m otede.")
                         log_event(msg)
                         print(f"\n[!] {msg}")
-                        dialogue.say("Hedefe yaklaşamıyorum, önümde bir engel var. "
-                                     "Konumu size söyledim.")
+                        # Whether going around could help depends on what the
+                        # obstacle is. A target on the floor with something
+                        # between means a route exists and the sweep may find
+                        # it. A target on a table means the obstacle *is* the
+                        # table -- there is nothing to route around, and the
+                        # drone has already said where the thing is. Going back
+                        # to searching there just climbs, re-acquires the same
+                        # laptop and stops at the same table edge: measured on
+                        # three runs out of four.
+                        on_surface = (tgt_world is not None
+                                      and tgt_world[2] > FLOOR_LEVEL_MAX)
+                        if on_surface:
+                            dialogue.say("Hedefe yaklaşamıyorum, bir yüzeyin "
+                                         "üstünde ve önümde engel var. "
+                                         "Konumu size söyledim.")
+                        else:
+                            dialogue.say("Hedefe yaklaşamıyorum, önümde bir "
+                                         "engel var. Konumu size söyledim.")
                         node.set_target_altitude(HOVER_ALTITUDE)
                         node.set_desired_twist(
                             hold_altitude_twist(node.current_altitude()))
                         locked_track_id = None
+                        if on_surface:
+                            log_event("Engel hedefin durdugu yuzey -- "
+                                      "dolasmanin faydasi yok, durunuyor.")
+                            target_last = target
+                            announced_arrival = True
+                            current_phase = PHASE_DONE
+                            continue
                         # Hold off on re-confirming for a while. Without this the
                         # drone aborts, returns to searching, re-acquires the
                         # same target from the same side seconds later and walks

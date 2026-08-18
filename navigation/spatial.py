@@ -236,7 +236,24 @@ SUPPORT_HEIGHTS = (0.0, 0.75, 1.0, 0.45)
 # exceeds 9.2 even with its detector box 3x too wide. Anywhere in that gap
 # separates them; the middle of it leaves room for both to be noisier than
 # measured.
-FLOOR_SWITCH_MARGIN = 12.0
+# Measured in the room, 38 detections of four objects at known positions
+# (scripts/calibrate_support_plane.py). Median position error by margin:
+#
+#         laptop  book   mug   floor box
+#   <= 6   0.31   0.21   0.17    0.67
+#   >= 8   0.68   1.15   0.87    0.67
+#
+# There is no trade here, which is what the old value assumed there was. The
+# floor object's error is 0.67 m at every margin -- lowering the threshold
+# never lifts it onto a table that is not there -- while every object genuinely
+# on a table gets three to five times closer. 12 was protecting nothing
+# measurable and costing the room's targets their position: in flight the
+# laptop was placed 0.8 m out and announced as "on the floor", in the same
+# sentence as the model describing it on a wooden table.
+#
+# Anything from 1 to 6 scores identically and the cliff is between 6 and 8, so
+# this sits in the middle of the flat region rather than at its edge.
+FLOOR_SWITCH_MARGIN = 4.0
 
 
 def range_from_apparent_size(candidate, target: str,
