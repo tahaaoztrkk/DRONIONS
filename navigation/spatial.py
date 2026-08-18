@@ -255,6 +255,24 @@ SUPPORT_HEIGHTS = (0.0, 0.75, 1.0, 0.45)
 # this sits in the middle of the flat region rather than at its edge.
 FLOOR_SWITCH_MARGIN = 4.0
 
+# How far the plane answer may disagree with the apparent-size answer before
+# the plane is disbelieved altogether.
+#
+# Projecting onto a plane needs the drone to be meaningfully above it, and on
+# an approach it stops being. Descending towards a mug on a 1.015 m table, at
+# 1.1 m altitude the table plane can only be projected 0.43 m out -- so it
+# drops away, the floor is all that is left, and the ray lands far past
+# everything. Measured in flight: a mug 0.88 m away was placed at 3.2 m and
+# announced as "on the floor", in the same breath as the model saying it was on
+# a table.
+#
+# Apparent size gives an independent range that does not degrade this way. Over
+# 38 detections the plane answer sits between 0.90 and 1.17 times it; the
+# failure above is 3.6. Anything past this ratio is the geometry breaking down,
+# and the size answer is used instead -- which also gives a height, without
+# having to pick a plane at all.
+RANGE_TRUST_RATIO = 2.0
+
 
 def range_from_apparent_size(candidate, target: str,
                              hfov: float = CAMERA_HFOV) -> Optional[float]:
@@ -438,7 +456,29 @@ def locate_target(candidate, drone_xyz, drone_quat, plane_z: Optional[float] = N
     # genuinely on the ground onto an imaginary table and shortens the distance
     # the user is told. Being wrong in the familiar direction beats being wrong
     # in a new one.
-    return best if best_gap * FLOOR_SWITCH_MARGIN < floor_gap else floor_hit
+    chosen = best if best_gap * FLOOR_SWITCH_MARGIN < floor_gap else floor_hit
+    return _sanity_against_size(chosen, drone_xyz, ray, expected)
+
+
+def _sanity_against_size(hit, drone_xyz, ray, expected: Optional[float]):
+    """Disbelieve a plane answer that the object's own apparent size contradicts.
+
+    See RANGE_TRUST_RATIO. When they disagree badly the plane is the one that
+    has failed -- it needs the drone to be well above it and on an approach that
+    stops being true -- so the target is placed along the same ray at the range
+    its size implies. The height falls out of that rather than being chosen.
+    """
+    if hit is None or expected is None:
+        return hit
+    rng = math.dist(hit, drone_xyz)
+    if rng <= 0:
+        return hit
+    ratio = rng / expected
+    if 1.0 / RANGE_TRUST_RATIO <= ratio <= RANGE_TRUST_RATIO:
+        return hit
+    return (drone_xyz[0] + ray[0] * expected,
+            drone_xyz[1] + ray[1] * expected,
+            drone_xyz[2] + ray[2] * expected)
 
 
 def relative_to_user(target_xy, user_xy, user_yaw: float) -> Tuple[float, float]:
