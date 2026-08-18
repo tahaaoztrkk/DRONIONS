@@ -190,8 +190,13 @@ WAYPOINT_TIMEOUT = 25.0     # s
 # closer than the camera can see. Arriving within this radius is close enough
 # to start looking around.
 REVISIT_STANDOFF = 2.5      # m
-REVISIT_SCAN_SECONDS = 12.0 # s; a slow yaw sweep, roughly half a turn
-REVISIT_SCAN_ANGULAR = 0.30 # rad/s
+REVISIT_SCAN_SECONDS = 14.0 # s
+# The scan sweeps back and forth across the bearing to the point rather than
+# spinning. Turning steadily at 0.30 rad/s covers 200 degrees in that time, so
+# the target passes through view once and briefly, which is the opposite of
+# what coming back here was for. An arc keeps it in frame for most of the scan.
+REVISIT_SCAN_ARC = 0.9      # rad either side, about 50 degrees
+REVISIT_SCAN_PERIOD = 7.0   # s for one full there-and-back
 # Past this the memory is stale enough that the sweep is the better bet.
 REVISIT_MAX_AGE = 45.0      # s
 # Consecutive obstacle contacts while pursuing one waypoint before giving up
@@ -280,6 +285,21 @@ ARRIVAL_CONFIRM_FRAMES = 5
 # the two disagree by metres -- which is what a wall filling the frame looks
 # like.
 ARRIVAL_MAX_DISTANCE = 2.5
+
+# Never descend nearer than this to the surface the target is resting on.
+#
+# The approach servo steers altitude from where the target sits in frame: below
+# centre means descend. With the camera pitched 20 deg down, something on a
+# table is always below centre, so the drone descends, still sees it below
+# centre, and descends again. Measured on a phone lying on a 1.015 m table: it
+# sank to 0.7 m -- under the table top -- and then flew into the side of it at
+# 0.48 m. The downward lidar never objected because the drone was over open
+# floor beside the table, and the servo had no idea the target was raised.
+#
+# The support height is already inferred when the target is located, so the
+# servo can simply be told not to go below it. Same margin as the ground
+# clearance it mirrors.
+TARGET_SURFACE_CLEARANCE = 0.60
 # How far (normalized image units) a YOLO detection may sit from the centre
 # Gemini reported and still count as the same object. Beyond this the two
 # perception layers simply disagree about what is in the frame.
@@ -411,6 +431,38 @@ def navdecision_to_twist(nav_decision, current_z):
     twist.linear.x = MAX_LINEAR * throttle
     twist.angular.z = -MAX_ANGULAR * turn
     return twist
+
+
+def close_on_point_twist(node, xy, current_z: float, target_z=None) -> Twist:
+    """Keep flying at a known world point while nothing is detected.
+
+    The detector's confidence sits around 0.2 at search distance, so detections
+    flicker in and out and the lock breaks several times a minute. Hovering
+    through those gaps -- which is what a bare hold did -- turns each one into a
+    lost target, a return to searching and another confirmation call: measured,
+    seven confirm-centre-lose cycles in four minutes, one API call each, with
+    the drone no closer at the end than at the start.
+
+    The target is not moving and its position was already computed, so a gap in
+    detection is not a reason to stop closing on it. This steers at that point
+    at approach speed while the detector is asked again on every frame.
+    """
+    t = Twist()
+    floor = None if target_z is None else target_z + TARGET_SURFACE_CLEARANCE
+    want = node.target_altitude()
+    if floor is not None and want < floor:
+        want = floor
+    t.linear.z = compute_altitude_vz(current_z, want, node.ground_clearance())
+    x, y, yaw = node.horizontal_pose()
+    bearing = math.atan2(xy[1] - y, xy[0] - x)
+    err = math.atan2(math.sin(bearing - yaw), math.cos(bearing - yaw))
+    t.angular.z = max(-AVOID_ANGULAR, min(AVOID_ANGULAR, 1.5 * err))
+    # Only translate once roughly pointed at it, and stop short: the point is an
+    # estimate carrying about half a metre of error, and the last thing wanted
+    # is to drive that error into whatever the target is standing on.
+    if abs(err) < 0.6 and math.hypot(xy[0] - x, xy[1] - y) > ARRIVAL_MAX_DISTANCE:
+        t.linear.x = MAX_LINEAR
+    return t
 
 
 def hold_altitude_twist(current_z: float) -> Twist:
@@ -564,9 +616,15 @@ class SearchPattern:
                 self._revisit_scan_until = now + REVISIT_SCAN_SECONDS
             if self._revisit_scan_until:
                 if now < self._revisit_scan_until:
-                    # Yaw in place. Translating here would carry the drone past
-                    # the very spot it came back to look at.
-                    t.angular.z = REVISIT_SCAN_ANGULAR
+                    # Yaw in place, sweeping an arc centred on the point.
+                    # Translating here would carry the drone past the very spot
+                    # it came back to look at.
+                    phase = (self._revisit_scan_until - now) / REVISIT_SCAN_PERIOD
+                    aim = (math.atan2(ry - y, rx - x)
+                           + REVISIT_SCAN_ARC * math.sin(2 * math.pi * phase))
+                    err = math.atan2(math.sin(aim - yaw), math.cos(aim - yaw))
+                    t.angular.z = max(-AVOID_ANGULAR,
+                                      min(AVOID_ANGULAR, 1.5 * err))
                     return t
                 self._revisit = None
                 self._revisit_scan_until = 0.0
@@ -1233,6 +1291,7 @@ def main():
     # rather than at each of the dozen sites that can lose a track.
     last_seen_xy = None
     last_seen_at = 0.0
+    target_surface_z = None
     previous_phase = PHASE_SEARCH
     target = None
     camera_warned = False
@@ -1851,6 +1910,9 @@ def main():
                     if target_xyz:
                         last_seen_xy = (target_xyz[0], target_xyz[1])
                         last_seen_at = time.time()
+                        # The plane the target was judged to be resting on. The
+                        # approach must not sink below it.
+                        target_surface_z = target_xyz[2]
                         # The estimate in world coordinates, logged so a run can
                         # be scored against the scenario's known object
                         # positions afterwards. Without it the log records what
@@ -2009,8 +2071,19 @@ def main():
                             if jump > GEMINI_POINT_MAX_DIST:
                                 frames_lost += 1
                                 nav_decision = None
-                                node.set_desired_twist(
-                                    navdecision_to_twist(None, node.current_altitude()))
+                                # Keep closing rather than hovering. The
+                                # detector flickers around 0.2 confidence at
+                                # this range, so a gap here says nothing about
+                                # the target having moved -- and hovering
+                                # through it spent the whole lost-frame budget
+                                # without covering a metre.
+                                if last_seen_xy is not None:
+                                    node.set_desired_twist(close_on_point_twist(
+                                        node, last_seen_xy, node.current_altitude(),
+                                        target_surface_z))
+                                else:
+                                    node.set_desired_twist(
+                                        navdecision_to_twist(None, node.current_altitude()))
                                 if frames_lost > MAX_FRAMES_LOST:
                                     print("\n[!] Hedef kaybedildi. VLM aramasına (Mod 1) geri dönülüyor...")
                                     speak("Hedef kaybedildi. Ortam tekrar taranıyor.")
@@ -2135,7 +2208,12 @@ def main():
                         if abs(error_y) > TRACK_VERTICAL_DEADBAND:
                             # +error_y = target below centre -> descend toward it.
                             delta = -(error_y / 0.5) * TRACK_ALT_RATE * dt
-                            node.set_target_altitude(node.target_altitude() + delta)
+                            want = node.target_altitude() + delta
+                            if target_surface_z is not None:
+                                floor = target_surface_z + TARGET_SURFACE_CLEARANCE
+                                if want < floor:
+                                    want = max(node.target_altitude(), floor)
+                            node.set_target_altitude(want)
 
                     if arrived and not announced_arrival:
                         announced_arrival = True
