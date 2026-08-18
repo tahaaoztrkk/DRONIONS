@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DRONIONS room: a 5 x 4 m living/work room, the scene the everyday scenarios
+  are actually set in.
+
+  It exists because the two worlds before it each answer only half the question.
+  dronions_scenario.sdf has a 3 m wall standing between the drone and the target
+  — a fixture for exercising obstacle avoidance, deliberately placed, and not
+  something a room contains. Perception numbers taken there measure that
+  fixture: the detector prefers the wall to the target at every range past 2 m.
+  dronions_tabletop.sdf removed the wall to separate size from clutter, and in
+  doing so removed the clutter altogether: one table on an empty plane, which
+  flatters the detector in the opposite direction.
+
+  Here the walls are boundaries rather than obstacles, and the confusers are the
+  ones a real room has — furniture, and the other objects sharing a surface.
+  This is where the size threshold and the size gate have to be calibrated.
+
+  Everything visible is a downloaded scanned or modelled asset, not a primitive.
+  That is not decoration: flat coloured boxes scored 0/9 at every size in the
+  tabletop world, including a "laptop" 253 px wide, because an untextured grey
+  rectangle is not a laptop to an open-vocabulary detector. Swapping in real
+  meshes took the same object to 9/9 at 0.92 confidence.
+
+  Objects sit at three heights on purpose — floor, sofa seat, table top. The
+  support surface is inferred rather than assumed, and getting that wrong is
+  what made the drone reject a laptop three times in one flight and, later, sink
+  under a table top and fly into its side. A scene where everything rests on the
+  floor cannot catch either.
+-->
+<sdf version="1.9">
+  <world name="dronions_room">
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+    <scene>
+      <grid>false</grid>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode/>
+            </friction>
+            <bounce/>
+            <contact/>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>500 500</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+        <pose>0 0 0 0 -0 0</pose>
+        <inertial>
+          <pose>0 0 0 0 -0 0</pose>
+          <mass>1</mass>
+          <inertia>
+            <ixx>1</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>1</iyy>
+            <iyz>0</iyz>
+            <izz>1</izz>
+          </inertia>
+        </inertial>
+        <enable_wind>false</enable_wind>
+      </link>
+      <pose>0 0 0 0 -0 0</pose>
+      <self_collide>false</self_collide>
+    </model>
+    <light name="sunUTC" type="directional">
+      <pose>0 0 500 0 -0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1</intensity>
+      <direction>0.001 0.625 -0.78</direction>
+      <diffuse>0.904 0.904 0.904 1</diffuse>
+      <specular>0.271 0.271 0.271 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <linear>0</linear>
+        <constant>1</constant>
+        <quadratic>0</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0</inner_angle>
+        <outer_angle>0</outer_angle>
+        <falloff>0</falloff>
+      </spot>
+    </light>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.397971057728974</latitude_deg>
+      <longitude_deg> 8.546163739800146</longitude_deg>
+      <elevation>0</elevation>
+    </spherical_coordinates>
+
+    <!-- === Room shell === -->
+    <!-- Walls bound the room; they are not in the way of anything. The sweep
+         climbs when its path is blocked, so a 2.5 m wall is above the 2 m
+         cruise but below the climb ceiling — worth watching, since a drone
+         indoors cannot answer a blocked path by going over the room. -->
+
+    <model name="wall_north">
+      <static>true</static>
+      <pose>1.0 2.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>5.1 0.1 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>5.1 0.1 2.5</size></box></geometry>
+          <material>
+            <ambient>0.82 0.8 0.76 1</ambient>
+            <diffuse>0.82 0.8 0.76 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_south">
+      <static>true</static>
+      <pose>1.0 -2.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>5.1 0.1 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>5.1 0.1 2.5</size></box></geometry>
+          <material>
+            <ambient>0.82 0.8 0.76 1</ambient>
+            <diffuse>0.82 0.8 0.76 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_east">
+      <static>true</static>
+      <pose>3.5 0.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 4.0 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 4.0 2.5</size></box></geometry>
+          <material>
+            <ambient>0.82 0.8 0.76 1</ambient>
+            <diffuse>0.82 0.8 0.76 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-1.5 0.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 4.0 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 4.0 2.5</size></box></geometry>
+          <material>
+            <ambient>0.82 0.8 0.76 1</ambient>
+            <diffuse>0.82 0.8 0.76 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="floor_rug">
+      <static>true</static>
+      <pose>1.0 0.0 0.005 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>4.6 3.6 0.01</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>4.6 3.6 0.01</size></box></geometry>
+          <material>
+            <ambient>0.55 0.5 0.46 1</ambient>
+            <diffuse>0.55 0.5 0.46 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- === Furniture === -->
+
+    <include>
+      <name>table</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Table</uri>
+      <pose>2.6 0.0 0.0 0 0 0.0</pose>
+    </include>
+
+    <include>
+      <name>sofa</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Sofa</uri>
+      <pose>0.5 -1.35 0.0 0 0 0.0</pose>
+    </include>
+
+    <include>
+      <name>bookshelf</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Bookshelf</uri>
+      <pose>-1.2 0.8 0.0 0 0 1.5708</pose>
+    </include>
+
+    <include>
+      <name>cabinet</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Cabinet</uri>
+      <pose>1.2 1.6 0.0 0 0 3.1416</pose>
+    </include>
+
+    <include>
+      <name>chair</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/VisitorChair</uri>
+      <pose>1.5 0.9 0.0 0 0 -1.9</pose>
+    </include>
+
+    <!-- === Objects, at three different heights ===
+         Table top 1.015, sofa seat ~0.45, floor 0. The support surface is
+         inferred from apparent size rather than assumed, so a scene with a
+         single height cannot exercise it — and getting it wrong is exactly what
+         rejected a laptop three times and later flew the drone into a table. -->
+
+    <include>
+      <name>laptop</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Travel_Mate_P_series_Notebook</uri>
+      <pose>3.05 0.22 1.015 0 0 2.6</pose>
+    </include>
+
+    <include>
+      <name>book</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Eat_to_Live_The_Amazing_NutrientRich_Program_for_Fast_and_Sustained_Weight_Loss_Revised_Edition_Book</uri>
+      <pose>3.05 -0.22 1.041 1.5708 0 0.4</pose>
+    </include>
+
+    <include>
+      <name>mug</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Cole_Hardware_Mug_Classic_Blue</uri>
+      <pose>2.62 0.24 1.015 0 0 1.2</pose>
+    </include>
+
+    <include>
+      <name>phone</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Samsung J8 Black</uri>
+      <pose>2.62 -0.16 1.019 1.5708 0 0.9</pose>
+    </include>
+
+    <include>
+      <name>bowl</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Bowl</uri>
+      <pose>2.18 0.2 1.015 0 0 0.0</pose>
+    </include>
+
+
+    <include>
+      <name>headphones</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Razer_Kraken_Pro_headset_Full_size_Black</uri>
+      <pose>0.5 -1.2 0.58 0 0 0.7</pose>
+    </include>
+
+    <!-- The floor needs a target the detector can actually find, or the
+         support-surface inference has nothing to be wrong about at that
+         height. This is the scenario world's box: textured, and the one
+         object whose detection behaviour is already characterised. -->
+    <include>
+      <name>floor_box</name>
+      <static>true</static>
+      <uri>/opt/ros/jazzy/share/ros_gz_sim_demos/models/cardboard_box</uri>
+      <pose>0.10 1.10 0.15 0 0 0.6</pose>
+    </include>
+
+    <include>
+      <name>bottle</name>
+      <static>true</static>
+      <uri>https://fuel.gazebosim.org/1.0/iche033/models/Water Bottle</uri>
+      <pose>1.4 -0.6 0.0 0 0 0.0</pose>
+    </include>
+
+  </world>
+</sdf>
