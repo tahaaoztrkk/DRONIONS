@@ -347,6 +347,12 @@ CENTER_BACKOFF_SPEED = 0.15     # m/s
 # measured, it hung at 2.8 m above a wall for thirty seconds, confirming the
 # mug three times from a place it could not get down from, and then gave up.
 CENTER_ADVANCE_SPEED = 0.18     # m/s
+
+# How near the surface underneath has to be to the target's own support height
+# before it counts as the same surface. Generous: the estimate of the support
+# height comes from a plane list with 0.25 m gaps in it, and mistaking the
+# target's own table for something to fly over is the more damaging error.
+SURFACE_MATCH_TOLERANCE = 0.40  # m
 # How far (normalized image units) a YOLO detection may sit from the centre
 # Gemini reported and still count as the same object. Beyond this the two
 # perception layers simply disagree about what is in the frame.
@@ -1946,14 +1952,27 @@ def main():
                     ground_blocked = (want < node.current_altitude()
                                       and node.ground_clearance()
                                       < MIN_GROUND_CLEARANCE)
+                    # *What* is underneath decides which way to go, and asking
+                    # only "am I blocked" got this backwards. Approaching a mug
+                    # on a table, the thing below is the table -- the target's
+                    # own surface -- and driving forward carried the drone over
+                    # it until the mug passed under the camera and the track
+                    # broke. The height of whatever is below separates the two
+                    # cases directly.
+                    surface_below = (node.current_altitude()
+                                     - node.ground_clearance())
+                    own_surface = (target_surface_z is not None
+                                   and abs(surface_below - target_surface_z)
+                                   < SURFACE_MATCH_TOLERANCE)
                     node.set_target_altitude(want)
                     # Nowhere left to go but sideways, and which way depends on
                     # why. Without either, the loop just waits out the centring
                     # deadline and starts the whole cycle again.
-                    if ground_blocked and not node.obstacle_ahead():
-                        # Something underneath that is not the target's own
-                        # surface. Forward clears it; centring has already
-                        # yawed towards the target, so forward is towards it.
+                    if ground_blocked and not own_surface and not node.obstacle_ahead():
+                        # Standing over something that is not the target's
+                        # surface -- a wall, the far side of a cabinet. Forward
+                        # clears it, and centring has already yawed towards the
+                        # target, so forward is towards it.
                         twist.linear.x = CENTER_ADVANCE_SPEED
                         if time.time() > clearance_advance_log_after:
                             log_event(
@@ -1962,7 +1981,7 @@ def main():
                                 f"ustunden geciliyor.")
                             clearance_advance_log_after = (
                                 time.time() + CLEARANCE_LOG_INTERVAL)
-                    elif at_surface and err_y > 0:
+                    elif (at_surface or own_surface) and err_y > 0:
                         twist.linear.x = -CENTER_BACKOFF_SPEED
 
                 node.set_desired_twist(twist)
