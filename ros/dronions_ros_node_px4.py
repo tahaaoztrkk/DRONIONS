@@ -2039,9 +2039,18 @@ def main():
                     # cases directly.
                     surface_below = (node.current_altitude()
                                      - node.ground_clearance())
-                    own_surface = (target_surface_z is not None
-                                   and abs(surface_below - target_surface_z)
-                                   < SURFACE_MATCH_TOLERANCE)
+                    if target_surface_z is None:
+                        # Nothing known yet -- the support height is only
+                        # settled once centring succeeds, and this runs while
+                        # it is still trying. Treating "unknown" as "not the
+                        # target's surface" made the drone advance over the
+                        # table it was looking down at, carrying the book out
+                        # of view before it could be centred at all. Unknown
+                        # has to mean do not advance.
+                        own_surface = True
+                    else:
+                        own_surface = (abs(surface_below - target_surface_z)
+                                       < SURFACE_MATCH_TOLERANCE)
                     node.set_target_altitude(want)
                     # Nowhere left to go but sideways, and which way depends on
                     # why. Without either, the loop just waits out the centring

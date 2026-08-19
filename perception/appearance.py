@@ -48,6 +48,22 @@ MAX_HUE_DEGREES = 25.0
 # Shadowed and washed-out pixels carry no reliable hue, and a bounding box is
 # full of both around the object's edges.
 MIN_SATURATION = 40
+
+# What this gate can and cannot do, measured on the room's own reference photos.
+#
+# Hue only exists where there is saturation, so for a dark object the surviving
+# pixels are its edges and whatever it is lying on. Cropped tight to the object,
+# the room's four references come out at: phone 32, book 18, laptop 23, mug 344.
+# The mug separates from everything; the phone, the book and the laptop are
+# within 14 degrees of each other and this gate cannot tell them apart at all.
+#
+# That matters because the phone and the book are exactly the pair that needs
+# separating -- the detector scores the book as a phone more confidently than
+# the phone. An earlier measurement showed the gate rejecting the book, but only
+# from close up, where its blue cover fills the crop; at search range the crop is
+# mostly table and it passes. Colour is doing real work for the mug and no work
+# for the dark objects, and the reference photo handed to the model is what has
+# to carry those.
 MIN_VALUE = 40
 
 # Fraction of the box kept when sampling. A detection box always includes some

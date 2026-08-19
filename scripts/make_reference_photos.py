@@ -49,9 +49,17 @@ TARGETS = {
     'laptop': (3.05,  0.22, 1.110, 0.375, 0.90),
 }
 OUT_DIR = 'memory'
-# Padding around the object, as a fraction of its own width. Enough context to
-# see what it is sitting on, not so much that the surface dominates the colour.
-PAD = 0.45
+# Padding around the object, as a fraction of its own width.
+#
+# 0.45 was chosen to give the model some context and it destroyed the colour
+# signature: for a small dark object on a wooden table the padding *is* the
+# picture, and all four references came out at hue 19-32 -- the table, not the
+# object. A gate comparing wood to wood cannot separate a black phone from a
+# blue book, which is the one job it had here.
+#
+# Tight enough that the object dominates. The model still sees context, because
+# the crops it is sent are padded separately in agent.py.
+PAD = 0.05
 
 
 def main() -> None:
