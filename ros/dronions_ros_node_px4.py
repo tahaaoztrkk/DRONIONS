@@ -1381,8 +1381,15 @@ def main():
     locked_track_id = None
     locked_point = (0.5, 0.5)
     wanderer = SearchPattern(SWEEP_START)
-    frames_lost = 0
-    MAX_FRAMES_LOST = 60
+    # Wall-clock grace, because the frame count turned out to mean something
+    # very different from what it looked like. The loop runs near 20 Hz, so 60
+    # frames is three seconds -- and a phone detected at 0.29 confidence drops
+    # out for longer than that routinely. Measured: the target was confirmed,
+    # localized to 0.17 m, and declared lost four seconds later, three separate
+    # times in one flight. The drone spends this window closing on a position
+    # it already knows, so the cost of being generous is small.
+    last_good_frame = time.time()
+    LOST_TARGET_GRACE = 12.0        # s
     last_vlm_check_time = 0
     VLM_CHECK_INTERVAL = 15.0
     RATE_LIMIT_BACKOFF = 30.0
@@ -1823,7 +1830,7 @@ def main():
                         print("\n[!] Gemini hedefi doğruladı. YOLO takibine geçiliyor...")
                         speak("Hedef doğrulandı. Takibe geçiliyor.")
                         tracker = Tracker()
-                        frames_lost = 0
+                        last_good_frame = time.time()
                         last_alt_update = time.time()
                         announced_arrival = False
                         arrived_frames = 0
@@ -2067,7 +2074,7 @@ def main():
                     else:
                         log_event("Konum hesaplanamadi (isin yere ulasmiyor).")
                     tracker = Tracker()
-                    frames_lost = 0
+                    last_good_frame = time.time()
                     arrived_frames = 0
                     announced_arrival = False
                     gemini_point = center_point
@@ -2113,7 +2120,7 @@ def main():
 
                 nav_decision = None
                 if tracked_candidates:
-                    frames_lost = 0
+                    last_good_frame = time.time()
                     if gemini_point:
                         # First tracked frame after confirmation: follow the
                         # object Gemini actually pointed at, then hold onto its
@@ -2202,7 +2209,6 @@ def main():
                                 cand.normalized_center[0] - locked_point[0],
                                 cand.normalized_center[1] - locked_point[1])
                             if jump > GEMINI_POINT_MAX_DIST:
-                                frames_lost += 1
                                 nav_decision = None
                                 # Keep closing rather than hovering. The
                                 # detector flickers around 0.2 confidence at
@@ -2217,7 +2223,7 @@ def main():
                                 else:
                                     node.set_desired_twist(
                                         navdecision_to_twist(None, node.current_altitude()))
-                                if frames_lost > MAX_FRAMES_LOST:
+                                if time.time() - last_good_frame > LOST_TARGET_GRACE:
                                     print("\n[!] Hedef kaybedildi. VLM aramasına (Mod 1) geri dönülüyor...")
                                     speak("Hedef kaybedildi. Ortam tekrar taranıyor.")
                                     node.set_target_altitude(HOVER_ALTITUDE)
@@ -2264,15 +2270,15 @@ def main():
                         # against the same budget as a blank frame keeps the
                         # drone closing on where the target actually is while
                         # the detector is asked again.
-                        frames_lost += 1
                         locked_track_id = None
                         if time.time() > size_reject_log_after:
                             log_event(f"Kare atlandi: aday {iw:.1f} m "
                                       f"genisliginde, '{target}' olamaz "
-                                      f"({frames_lost}/{MAX_FRAMES_LOST}).")
+                                      f"({time.time() - last_good_frame:.0f}/{LOST_TARGET_GRACE:.0f} s).")
                             size_reject_log_after = (time.time()
                                                      + CLEARANCE_LOG_INTERVAL)
-                        if frames_lost > MAX_FRAMES_LOST or last_seen_xy is None:
+                        if (time.time() - last_good_frame > LOST_TARGET_GRACE
+                                or last_seen_xy is None):
                             msg = (f"Takip birakildi: izlenen nesne {iw:.1f} m "
                                    f"genisliginde, '{target}' bu boyutta olamaz.")
                             log_event(msg)
@@ -2447,11 +2453,10 @@ def main():
                     # dithers across it, which announced arrival over and over.
                     # It resets when the target does (loss or a new command).
                 else:
-                    frames_lost += 1
                     last_alt_update = time.time()
                 node.set_desired_twist(navdecision_to_twist(nav_decision, node.current_altitude()))
 
-                if frames_lost > MAX_FRAMES_LOST:
+                if time.time() - last_good_frame > LOST_TARGET_GRACE:
                     print("\n[!] Hedef kaybedildi. VLM aramasına (Mod 1) geri dönülüyor...")
                     speak("Hedef kaybedildi. Ortam tekrar taranıyor.")
                     # Back up to search altitude -- a wide view is what finds
