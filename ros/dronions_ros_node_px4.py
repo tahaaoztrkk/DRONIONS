@@ -1346,6 +1346,11 @@ def main():
     last_seen_at = 0.0
     target_surface_z = None
     clearance_advance_log_after = 0.0
+    size_reject_log_after = 0.0
+    # Whether the user has been told where the target is. Once they
+    # have, running out of track is a reason to stop, not to start
+    # the whole search over.
+    position_reported = False
     previous_phase = PHASE_SEARCH
     target = None
     camera_warned = False
@@ -1461,6 +1466,7 @@ def main():
                     # reach the next object and never stop, since stopping is
                     # what the arrival branch now does.
                     announced_arrival = False
+                    position_reported = False
                     last_seen_xy = None
                     target_surface_z = None
                     node.set_target_altitude(HOVER_ALTITUDE)
@@ -2057,6 +2063,7 @@ def main():
                         target_last = target
                         last_answer_frame = frame.copy()
                         dialogue.record_answer(last_report)
+                        position_reported = True
                     else:
                         log_event("Konum hesaplanamadi (isin yere ulasmiyor).")
                     tracker = Tracker()
@@ -2243,15 +2250,58 @@ def main():
                                                      node.orientation(), target):
                         iw = implied_width(best_candidate, node.pose_xyz(),
                                            node.orientation())
-                        msg = (f"Takip birakildi: izlenen nesne {iw:.1f} m genisliginde, "
-                               f"'{target}' bu boyutta olamaz.")
-                        log_event(msg)
-                        print(f"\n[!] {msg}")
-                        node.set_target_altitude(HOVER_ALTITUDE)
-                        node.set_desired_twist(
-                            hold_altitude_twist(node.current_altitude()))
+                        # A frame whose candidate is the wrong size is a bad
+                        # frame, not a lost target. Dropping straight back to
+                        # searching here is what loses small flat objects: a
+                        # phone on a table is dark and low-contrast, so as the
+                        # drone closes the box snaps out to the table edge and
+                        # reads 1.1 m wide -- correctly rejected, and the whole
+                        # approach abandoned with it, seven seconds after the
+                        # position had been fixed to within 0.17 m.
+                        #
+                        # The confirmed position is still good, and the lock is
+                        # dropped so nothing wrong gets chased. Counting this
+                        # against the same budget as a blank frame keeps the
+                        # drone closing on where the target actually is while
+                        # the detector is asked again.
+                        frames_lost += 1
                         locked_track_id = None
-                        current_phase = PHASE_SEARCH
+                        if time.time() > size_reject_log_after:
+                            log_event(f"Kare atlandi: aday {iw:.1f} m "
+                                      f"genisliginde, '{target}' olamaz "
+                                      f"({frames_lost}/{MAX_FRAMES_LOST}).")
+                            size_reject_log_after = (time.time()
+                                                     + CLEARANCE_LOG_INTERVAL)
+                        if frames_lost > MAX_FRAMES_LOST or last_seen_xy is None:
+                            msg = (f"Takip birakildi: izlenen nesne {iw:.1f} m "
+                                   f"genisliginde, '{target}' bu boyutta olamaz.")
+                            log_event(msg)
+                            print(f"\n[!] {msg}")
+                            node.set_target_altitude(HOVER_ALTITUDE)
+                            node.set_desired_twist(
+                                hold_altitude_twist(node.current_altitude()))
+                            if position_reported:
+                                # The user already has the answer. Sweeping the
+                                # room again to re-find something the detector
+                                # cannot hold at close range just repeats this,
+                                # and a flat dark phone on a table is exactly
+                                # that: located to 0.17 m, then untrackable.
+                                log_event("Konum bildirilmisti -- yaklasma "
+                                          "birakiliyor, arama yeniden "
+                                          "baslatilmiyor.")
+                                dialogue.say(
+                                    f"{target} konumunu size söyledim, ama "
+                                    "yaklaşırken izini kaybediyorum. "
+                                    "Olduğum yerde bekliyorum.")
+                                target_last = target
+                                announced_arrival = True
+                                current_phase = PHASE_DONE
+                            else:
+                                current_phase = PHASE_SEARCH
+                            continue
+                        node.set_desired_twist(close_on_point_twist(
+                            node, last_seen_xy, node.current_altitude(),
+                            target_surface_z))
                         continue
 
                     # Something solid between here and the target. TRACK used to
