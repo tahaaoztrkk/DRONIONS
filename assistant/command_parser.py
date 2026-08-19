@@ -173,7 +173,29 @@ def normalize_target(text: str) -> str:
     expansion. Same failure as an unparsed Turkish command, reached by a
     different route.
     """
-    return _normalize_tr((text or "").lower().strip().rstrip("?.!"))
+    return _canonicalise(_normalize_tr((text or "").lower().strip().rstrip("?.!")))
+
+
+def _canonicalise(target: str) -> str:
+    """Resolve a synonym to the name the rest of the system is keyed on.
+
+    Four separate places look a target up by its exact string: the prompt
+    expansion, the object-width table, the negative prompts and the memory
+    bank's reference photo. Each was fixed on its own as it was found, which
+    was three fixes too many -- asking for a "cup" searched on one prompt with
+    the size gate silently off, and asking for a "cell phone" ran with no
+    reference photo, so the colour gate that separates the phone from the book
+    never engaged and the book won on detector confidence every time.
+
+    They are all keyed on the same names, so the resolution belongs here, once,
+    where the target enters the system. A word that is one of an entry's own
+    prompts is that entry.
+    """
+    try:
+        from utils.prompts import _canonical
+    except ImportError:
+        return target
+    return _canonical(target) or target
 
 
 def parse_command(command: str) -> dict:
@@ -182,15 +204,22 @@ def parse_command(command: str) -> dict:
     if not text:
         return {"intent": "unknown", "target": None}
 
+    # Both routes end in _canonicalise, or the same word reaches the system
+    # under two names depending on how it was phrased. "cell phone bul" and
+    # "cep telefonumu bul" mean the same thing and only the second one used to
+    # arrive as "phone" -- which is the name the prompt table, the width table
+    # and the memory bank's reference photo are all keyed on.
     m = _EN.search(text)
     if m:
-        return {"intent": "find", "target": m.group(2).strip()}
+        return {"intent": "find",
+                "target": _canonicalise(m.group(2).strip())}
 
     for verb in _TR_VERBS:
         if text.endswith(" " + verb) or text == verb:
             rest = text[: len(text) - len(verb)].strip(" ,")
             words = [w for w in rest.split() if w not in _TR_FILLERS]
             if words:
-                return {"intent": "find", "target": _normalize_tr(" ".join(words))}
+                return {"intent": "find",
+                        "target": _canonicalise(_normalize_tr(" ".join(words)))}
 
     return {"intent": "unknown", "target": None}
