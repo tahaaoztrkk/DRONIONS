@@ -52,6 +52,7 @@ import threading
 import queue
 from collections import deque
 import time
+import glob
 import math
 import random
 
@@ -394,6 +395,15 @@ GEMINI_POINT_MAX_DIST = 0.25
 # closes distance during centring and apparent area grows as 1/d^2 -- but the
 # case this exists to reject was off by a factor of 165, so generous is enough.
 GEMINI_AREA_RATIO_MAX = 6.0
+# How many of the user's other objects to show as counter-examples.
+#
+# Capped rather than "all of them" for two reasons. The bank accumulates things
+# from scenes that are no longer set up, and a wall of "this is NOT it" images
+# pushes the model towards [NONE] -- which is the failure the base-rate wording
+# was just corrected for. Four is enough to include the object that actually
+# causes the confusion while leaving the target's own photo the first and most
+# prominent one.
+MAX_COUNTER_EXAMPLES = 4
 # The sweep usually catches the target at the edge of the frame -- the one
 # confirmed in flight sat at (0.11, 0.93), a corner. Handing that straight to
 # tracking meant driving forward while barely holding it in view, and it was
@@ -477,6 +487,29 @@ def ref_path_for(target):
             if os.path.exists(path):
                 return path
     return None
+
+
+def other_refs_for(target):
+    """The user's other memory-bank objects, as counter-examples.
+
+    While hunting one of them the rest are known non-targets, and naming them
+    is much stronger than describing the target alone. The room's book lies
+    flat with a bright blue cover and is the one object the phone is confused
+    with -- the detector scores it as a phone more confidently than the phone,
+    and colour only separates them from close up, where the cover fills the
+    crop. Its photo is sitting in the bank already.
+    """
+    if not target:
+        return {}
+    out = {}
+    for path in sorted(glob.glob(os.path.join("memory", "*.jpg"))
+                       + glob.glob(os.path.join("memory", "*.png"))):
+        name = os.path.splitext(os.path.basename(path))[0].replace("_", " ")
+        if name.lower() != target.lower().strip():
+            out[name] = path
+        if len(out) >= MAX_COUNTER_EXAMPLES:
+            break
+    return out
 
 
 def compute_altitude_vz(current_z, target_z=HOVER_ALTITUDE, clearance=None):
@@ -1864,6 +1897,7 @@ def main():
                         continue
                     else:
                         result = select_candidate(frame, search_candidates, target,
+                                                  other_refs=other_refs_for(target),
                                                   reference_img_path=ref_path)
                     msg = result['message']
                     log_event(f"Gemini Cevabı: {msg}")

@@ -127,7 +127,8 @@ def _spoken_context(text: str) -> str:
 
 
 def select_candidate(frame: np.ndarray, candidates, target: str,
-                     reference_img_path: str = None) -> dict:
+                     reference_img_path: str = None,
+                     other_refs: dict = None) -> dict:
     """Asks Gemini which of YOLO's detections is the target.
 
     Replaces asking "is it in this view, and where?" with "here are the N
@@ -154,12 +155,32 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
     prompt = [
         f"I am looking for my specific '{target}'.",
     ]
+    others = {n: p for n, p in (other_refs or {}).items() if os.path.exists(p)}
     if reference_img_path and os.path.exists(reference_img_path):
         print(f"[MEMORY BANK] Referans görsel eklendi: {reference_img_path}")
-        prompt.append(
-            "The FIRST image is a reference photo of it. "
-            "The images after that are numbered crops taken from the current camera view."
-        )
+        if others:
+            # The memory bank holds photos of the user's other things, and
+            # while hunting one of them the rest are known non-targets. Naming
+            # them is far stronger than describing the target alone: the room's
+            # book, lying flat with a bright blue cover, is the single object
+            # the phone is confused with, and it is sitting in the bank with
+            # its own picture. Asking "which of these is it" beats asking "is
+            # this it".
+            print(f"[MEMORY BANK] Karsi ornekler: {', '.join(others)}")
+            prompt.append(
+                f"The FIRST image is a reference photo of my '{target}'. "
+                f"The next {len(others)} images are reference photos of OTHER "
+                f"objects of mine that are also in this room and are NOT what I "
+                f"am looking for: " + ", ".join(others) + ". They are shown so "
+                f"you can rule them out -- if a crop matches one of those "
+                f"better than it matches the first image, it is not my "
+                f"'{target}'. The numbered crops come after them."
+            )
+        else:
+            prompt.append(
+                "The FIRST image is a reference photo of it. "
+                "The images after that are numbered crops taken from the current camera view."
+            )
     else:
         prompt.append("The images below are numbered crops from the current camera view.")
     prompt.append(
@@ -213,6 +234,9 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
 
     if reference_img_path and os.path.exists(reference_img_path):
         contents.append(PIL.Image.open(reference_img_path))
+        for other_name, other_path in others.items():
+            contents.append(f"NOT my {target} -- this is my {other_name}:")
+            contents.append(PIL.Image.open(other_path))
 
     for i, cand in enumerate(shortlist, start=1):
         x1, y1, x2, y2 = cand.bbox
