@@ -335,10 +335,11 @@ FLOOR_LEVEL_MAX = 0.35
 # near edge of the picture. Flying to zero distance guarantees losing it.
 #
 # The floor is set by the airframe rather than the optics. The x500 is 0.68 m
-# across, so a metre horizontally already puts a rotor two thirds of the way to
-# the target; measured against the frame geometry, a metre also keeps the
-# target at y=0.61, comfortably inside the picture rather than on its edge.
-MIN_APPROACH_STANDOFF = 1.0     # m
+# across, so at this distance a rotor tip is still 0.46 m clear of the target,
+# and the drone is holding 0.6 m above the surface anyway. Against the frame
+# geometry it puts the target at y=0.67 -- lower in the picture than a metre
+# would, still well inside it, and close enough to be worth flying to.
+MIN_APPROACH_STANDOFF = 0.8     # m
 # Where in the lower half of the frame to aim for, as a fraction of the
 # half-height below the boresight. Kept well short of 1.0, which is the edge.
 STANDOFF_FRAME_FRACTION = 0.5
@@ -1572,10 +1573,25 @@ def main():
                 # Hold where it arrived and answer questions about what it
                 # found. A new command is what starts anything moving again;
                 # the intake above runs before this and sets the phase itself.
-                # No frame is read here: nothing is being looked for, and
-                # holding the last one on screen says exactly that.
+                #
+                # The view keeps updating. Skipping the frame read here left
+                # the window frozen on the last search frame, still captioned
+                # with the search phase -- so the terminal said the target had
+                # been reached while the picture said it was still hunting.
                 node.set_desired_twist(
                     hold_altitude_twist(node.current_altitude()))
+                ok, done_frame = node.cap_read()
+                if ok and done_frame is not None:
+                    # The top line of the overlay is only drawn when a
+                    # navigation decision is handed in, so passing None left
+                    # the picture with nothing saying the target had been
+                    # reached while the terminal said it had.
+                    cv2.imshow("DRONIONS AI",
+                               draw_overlay(done_frame, [],
+                                            {'action': f"ARRIVED: {target_last}"
+                                                       if target_last else "ARRIVED",
+                                             'angle': 0},
+                                            phase=current_phase))
                 if (cv2.waitKey(30) & 0xFF) == ord('q'):
                     break
                 previous_phase = current_phase
