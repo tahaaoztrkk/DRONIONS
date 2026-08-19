@@ -123,7 +123,8 @@ from perception.tracker import Tracker
 from navigation.navigator import get_navigation_decision
 from navigation.spatial import (locate_target, describe_target,
                                 describe_direction, relative_to_user,
-                                size_plausible, implied_width)
+                                size_plausible, implied_width,
+                                CAMERA_ASPECT, CAMERA_HFOV, CAMERA_PITCH_DOWN)
 from ui.overlay import draw_overlay
 
 PHASE_SEARCH = "VLM SEARCHING"
@@ -322,6 +323,28 @@ TARGET_SURFACE_CLEARANCE = 0.60
 # Well clear of the floor objects the estimate places at 0.15-0.30 m, and well
 # below the lowest surface on file at 0.45 m.
 FLOOR_LEVEL_MAX = 0.35
+
+# Closest the approach may get, horizontally, to where it thinks the target is.
+#
+# Arrival was judged only from how much of the frame the object fills, which a
+# small object never does -- so the drone kept closing on a phone until it was
+# directly above it, and from there could not see it at all. The camera is
+# pitched 20 degrees down with a 42 degree half-height, so the frame reaches
+# 62 degrees below horizontal and nothing nearer than that is in view: 0.6 m
+# above a table, anything closer than about 0.35 m horizontally is behind the
+# near edge of the picture. Flying to zero distance guarantees losing it.
+#
+# The floor is set by the airframe rather than the optics. The x500 is 0.68 m
+# across, so a metre horizontally already puts a rotor two thirds of the way to
+# the target; measured against the frame geometry, a metre also keeps the
+# target at y=0.61, comfortably inside the picture rather than on its edge.
+MIN_APPROACH_STANDOFF = 1.0     # m
+# Where in the lower half of the frame to aim for, as a fraction of the
+# half-height below the boresight. Kept well short of 1.0, which is the edge.
+STANDOFF_FRAME_FRACTION = 0.5
+# Half the frame's vertical angle, from the lens actually fitted rather than a
+# remembered number -- the field of view is a variable in this project.
+HALF_VFOV = math.atan(math.tan(CAMERA_HFOV / 2.0) / CAMERA_ASPECT)
 
 # Backing off is the third way to centre a target, and the only one left once
 # the drone is close.
@@ -2401,7 +2424,18 @@ def main():
                     # because the wall had grown into the frame. Geometry knows
                     # better -- cross-check it. No opinion when the projection
                     # fails, rather than blocking arrival forever.
-                    if nav_decision.get("action") == "ARRIVED":
+                    # Close enough is also arrival, and for a small object it
+                    # is the only thing that ever will be: a phone never fills
+                    # the frame, so the coverage test alone flew the drone on
+                    # top of it and out of its own view.
+                    close_enough = False
+                    if tgt_dist is not None:
+                        dz = max(0.0, node.current_altitude()
+                                 - (target_surface_z or 0.0))
+                        keep = dz / math.tan(CAMERA_PITCH_DOWN
+                                             + STANDOFF_FRAME_FRACTION * HALF_VFOV)
+                        close_enough = tgt_dist <= max(keep, MIN_APPROACH_STANDOFF)
+                    if nav_decision.get("action") == "ARRIVED" or close_enough:
                         if tgt_dist is not None and tgt_dist > ARRIVAL_MAX_DISTANCE:
                             if arrived_frames:
                                 log_event(f"VARIS reddedildi: kare doluyor ama hedef "
