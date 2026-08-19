@@ -164,14 +164,35 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
         prompt.append("The images below are numbered crops from the current camera view.")
     prompt.append(
         # The base rate is stated because it is measured, and because without
-        # it the question degrades into a yes/no. Across 80 surveyed viewpoints
-        # the object was present in 14%, and the detector usually offers a
-        # single crop -- so the model is handed one picture and asked "is this
-        # it", which is exactly the shape that gets a reflexive yes. A run
-        # approved a bright blue distractor against a tan reference photo.
-        f"Most of the time the object is NOT in view: in this system roughly "
-        f"six out of seven of these requests contain no match at all, so "
-        f"'[NONE]' is the ordinary answer and choosing a crop is the exception. "
+        # A base rate is stated because without it the question degrades into a
+        # yes/no on a single picture, which is the shape that gets a reflexive
+        # yes -- a run once approved a bright blue distractor against a tan
+        # reference photo.
+        #
+        # It says something different now, because what reaches this point has
+        # changed. The figure used to be one in seven, measured over 80 raw
+        # viewpoints before anything screened them. Since then candidates must
+        # pass a physical size check and a colour comparison against this same
+        # reference before they are ever cropped, and those remove exactly the
+        # confusions the warning was aimed at: the room's book, whose bright
+        # blue cover the detector scores as a phone more confidently than the
+        # phone itself, is rejected on colour before it gets here.
+        #
+        # Leaving the old rate in place cost the opposite failure. Handed clear,
+        # well-lit crops of the actual phone -- indistinguishable from the
+        # reference to a person -- the model answered [NONE] eight times in one
+        # flight, because it had been told a match is the exception.
+        (f"These crops have already been screened: each one is the right "
+         f"physical size for a '{target}' and its colour matches the reference. "
+         f"So a genuine match is common here rather than rare. Still answer "
+         f"'[NONE]' if what you see clearly differs from the reference -- the "
+         f"screening is not proof. "
+         if reference_img_path and os.path.exists(reference_img_path) else
+         # Without a reference photo the colour comparison never runs, so
+         # nothing has removed the look-alikes and the old caution still holds.
+         f"Most of the time the object is NOT in view: without a reference "
+         f"photo nothing has screened these for colour, so '[NONE]' is the "
+         f"ordinary answer and choosing a crop is the exception. ") +
         f"Do not pick the closest-looking crop. Pick one only if it clearly "
         f"matches on colour, texture and markings; if it differs in any of "
         f"those, it is a different object even when the shape is identical. "
