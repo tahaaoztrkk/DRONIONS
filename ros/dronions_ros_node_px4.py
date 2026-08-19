@@ -1383,6 +1383,9 @@ def main():
     # have, running out of track is a reason to stop, not to start
     # the whole search over.
     position_reported = False
+    # Last boxes drawn on the arrival view, kept so a frame that
+    # detects nothing does not blink the marker off the target.
+    done_cands = []
     previous_phase = PHASE_SEARCH
     target = None
     camera_warned = False
@@ -1506,6 +1509,7 @@ def main():
                     # what the arrival branch now does.
                     announced_arrival = False
                     position_reported = False
+                    done_cands = []
                     last_seen_xy = None
                     target_surface_z = None
                     node.set_target_altitude(HOVER_ALTITUDE)
@@ -1590,12 +1594,26 @@ def main():
                     hold_altitude_twist(node.current_altitude()))
                 ok, done_frame = node.cap_read()
                 if ok and done_frame is not None:
+                    # Keep detecting, so the box stays on the thing that was
+                    # found. Handing in an empty candidate list drew a picture
+                    # of the target with nothing marking it -- the one moment
+                    # the mark is most worth having.
+                    #
+                    # Detection flickers at this range, so a frame that finds
+                    # nothing keeps showing the last box rather than blinking
+                    # it out. It is the same object either way: the drone is
+                    # holding station and so is the target.
+                    if target_last:
+                        detector.set_target(target_last)
+                        found = filter_candidates(detector.detect(done_frame))
+                        if found:
+                            done_cands = found
                     # The top line of the overlay is only drawn when a
                     # navigation decision is handed in, so passing None left
                     # the picture with nothing saying the target had been
                     # reached while the terminal said it had.
                     cv2.imshow("DRONIONS AI",
-                               draw_overlay(done_frame, [],
+                               draw_overlay(done_frame, done_cands,
                                             {'action': f"ARRIVED: {target_last}"
                                                        if target_last else "ARRIVED",
                                              'angle': 0},
