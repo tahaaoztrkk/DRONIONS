@@ -340,9 +340,17 @@ FLOOR_LEVEL_MAX = 0.35
 # geometry it puts the target at y=0.67 -- lower in the picture than a metre
 # would, still well inside it, and close enough to be worth flying to.
 MIN_APPROACH_STANDOFF = 0.8     # m
-# Where in the lower half of the frame to aim for, as a fraction of the
-# half-height below the boresight. Kept well short of 1.0, which is the edge.
-STANDOFF_FRAME_FRACTION = 0.5
+# Stop just before the target would slide off the bottom of the picture, rather
+# than where it happens to be nicely framed. Those are different questions and
+# conflating them declared the laptop reached at 2.4 m: the drone was still at
+# cruise altitude, where 2.3 m *is* where a floor target sits at mid-frame, so
+# the rule fired before the approach had begun. How close to get is set by the
+# airframe; the frame edge only says when to stop getting closer.
+EDGE_MARGIN = 1.4               # how far short of the true edge to stop
+# ...and none of it applies until the drone has come down to its approach
+# height, since the edge distance shrinks with the height difference and is
+# meaningless while that is still two metres.
+APPROACH_ALT_TOLERANCE = 0.30   # m
 # Half the frame's vertical angle, from the lens actually fitted rather than a
 # remembered number -- the field of view is a variable in this project.
 HALF_VFOV = math.atan(math.tan(CAMERA_HFOV / 2.0) / CAMERA_ASPECT)
@@ -2458,14 +2466,19 @@ def main():
                     # is exactly the stability a stopping rule needs.
                     close_enough = False
                     if last_seen_xy is not None and position_reported:
+                        surface = target_surface_z or 0.0
+                        approach_alt = surface + TARGET_SURFACE_CLEARANCE
+                        descended = (node.current_altitude()
+                                     <= approach_alt + APPROACH_ALT_TOLERANCE)
                         dx, dy, _ = node.pose_xyz()
                         horiz = math.hypot(last_seen_xy[0] - dx,
                                            last_seen_xy[1] - dy)
-                        dz = max(0.0, node.current_altitude()
-                                 - (target_surface_z or 0.0))
-                        keep = dz / math.tan(CAMERA_PITCH_DOWN
-                                             + STANDOFF_FRAME_FRACTION * HALF_VFOV)
-                        close_enough = horiz <= max(keep, MIN_APPROACH_STANDOFF)
+                        dz = max(0.0, node.current_altitude() - surface)
+                        # The true bottom edge of the picture, not a comfortable
+                        # spot in it: closer than this and the target is gone.
+                        edge = dz / math.tan(CAMERA_PITCH_DOWN + HALF_VFOV)
+                        close_enough = descended and horiz <= max(
+                            MIN_APPROACH_STANDOFF, edge * EDGE_MARGIN)
                     if nav_decision.get("action") == "ARRIVED" or close_enough:
                         if tgt_dist is not None and tgt_dist > ARRIVAL_MAX_DISTANCE:
                             if arrived_frames:
