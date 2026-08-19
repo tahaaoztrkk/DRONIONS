@@ -2444,13 +2444,28 @@ def main():
                     # is the only thing that ever will be: a phone never fills
                     # the frame, so the coverage test alone flew the drone on
                     # top of it and out of its own view.
+                    # Measured horizontally, and against the position the
+                    # user was actually told -- not a fresh per-frame estimate.
+                    #
+                    # The first version of this used both the other way and
+                    # declared arrival at the takeoff point with nothing on
+                    # screen. tgt_dist is a 3D distance while the standoff is a
+                    # horizontal one, so they were never the same quantity; and
+                    # a fresh estimate of a spurious small detection gets placed
+                    # right next to the drone, because a small box means a near
+                    # object once apparent size decides the range. The confirmed
+                    # position moves only when the target is re-centred, which
+                    # is exactly the stability a stopping rule needs.
                     close_enough = False
-                    if tgt_dist is not None:
+                    if last_seen_xy is not None and position_reported:
+                        dx, dy, _ = node.pose_xyz()
+                        horiz = math.hypot(last_seen_xy[0] - dx,
+                                           last_seen_xy[1] - dy)
                         dz = max(0.0, node.current_altitude()
                                  - (target_surface_z or 0.0))
                         keep = dz / math.tan(CAMERA_PITCH_DOWN
                                              + STANDOFF_FRAME_FRACTION * HALF_VFOV)
-                        close_enough = tgt_dist <= max(keep, MIN_APPROACH_STANDOFF)
+                        close_enough = horiz <= max(keep, MIN_APPROACH_STANDOFF)
                     if nav_decision.get("action") == "ARRIVED" or close_enough:
                         if tgt_dist is not None and tgt_dist > ARRIVAL_MAX_DISTANCE:
                             if arrived_frames:
