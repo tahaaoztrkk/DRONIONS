@@ -23,7 +23,7 @@ Output:
 ]
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 PROMPT_DATABASE: Dict[str, List[str]] = {
@@ -243,7 +243,25 @@ def get_prompts(target: str) -> List[str]:
         if variant != target and variant in PROMPT_DATABASE:
             return PROMPT_DATABASE[variant]
 
+    # A synonym of an entry is that entry. "cup" is one of the mug's own
+    # prompts, but it is not the key, so asking for a cup searched on the
+    # single word "cup" while six phrases sat unused one dictionary lookup
+    # away. In flight that is the difference between finding the mug at 0.84
+    # and not finding it at all -- and the warning about it was printed and
+    # scrolled past, twice.
+    key = _canonical(target)
+    if key:
+        return PROMPT_DATABASE[key]
+
     return [target]
+
+
+def _canonical(target: str) -> Optional[str]:
+    """The database key whose prompt list contains this word, if any."""
+    for key, prompts in PROMPT_DATABASE.items():
+        if target in (p.lower() for p in prompts):
+            return key
+    return None
 
 
 def get_negative_prompts(target: str) -> List[str]:
@@ -261,7 +279,12 @@ def get_negative_prompts(target: str) -> List[str]:
 
     target = target.lower().strip()
 
-    return NEGATIVE_DATABASE.get(target, [])
+    if target in NEGATIVE_DATABASE:
+        return NEGATIVE_DATABASE[target]
+    # Same aliasing as the positives, or a synonym would be given
+    # one entry's prompts and another's negatives.
+    key = _canonical(target)
+    return NEGATIVE_DATABASE.get(key, []) if key else []
 
 
 def _check_databases() -> None:

@@ -282,7 +282,7 @@ def range_from_apparent_size(candidate, target: str,
     much too unstable for that -- but to tell two candidate support surfaces
     apart, where the answers differ by metres rather than centimetres.
     """
-    width_m = OBJECT_WIDTHS.get((target or "").lower().strip())
+    width_m = _width_for(target)
     img_w = getattr(candidate, "image_width", 0)
     if not width_m or not img_w:
         return None
@@ -326,6 +326,25 @@ def implied_width(candidate, drone_xyz, drone_quat,
     rng = math.dist(hit, drone_xyz)
     frac = (candidate.bbox[2] - candidate.bbox[0]) / candidate.image_width
     return frac * 2.0 * rng * math.tan(CAMERA_HFOV / 2.0)
+
+
+def _width_for(target: str) -> Optional[float]:
+    """Known width of a target, resolving a synonym to the entry it belongs to.
+
+    The size gate is keyed on one spelling, and asking for a "cup" rather than a
+    "mug" silently switched it off -- "nothing on file: no opinion" is the same
+    code path as a genuinely unknown object. The prompt table already knows
+    those two words are the same thing, so it is asked.
+    """
+    target = (target or "").lower().strip()
+    if target in OBJECT_WIDTHS:
+        return OBJECT_WIDTHS[target]
+    try:
+        from utils.prompts import _canonical
+    except ImportError:
+        return None
+    key = _canonical(target)
+    return OBJECT_WIDTHS.get(key) if key else None
 
 
 def size_plausible(candidate, drone_xyz, drone_quat, target: str) -> bool:
@@ -383,7 +402,7 @@ def size_plausible(candidate, drone_xyz, drone_quat, target: str) -> bool:
     otherwise would mean going back to rejecting the target as well. Identity
     is the colour gate's job and the model's.
     """
-    expected = OBJECT_WIDTHS.get((target or "").lower().strip())
+    expected = _width_for(target)
     if not expected:
         return True                 # nothing on file: no opinion
     measured = False
