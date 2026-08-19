@@ -1412,6 +1412,7 @@ def main():
     pose_broken = False
     ref_colour = None
     size_rejected_total = 0
+    colour_rejected_total = 0
     stray_report_after = 0.0
     locked_track_id = None
     locked_point = (0.5, 0.5)
@@ -1774,18 +1775,29 @@ def main():
                     # wrong thing -- the blue box and the green sphere are both
                     # within a few centimetres of the target's dimensions, and
                     # between them they took four of nine locks in a campaign.
-                    kept = [c for c in search_candidates
-                            if size_plausible(c, dpos, dquat, target)
-                            and colour_plausible(frame, c, ref_colour)]
-                    if len(kept) != len(search_candidates):
-                        size_rejected_total += len(search_candidates) - len(kept)
+                    # Counted separately, because one line reporting both as
+                    # "size" made a colour rejection indistinguishable from a
+                    # size one -- and the log is the only view into which gate
+                    # is doing what. A whole session was spent reading colour
+                    # failures as size failures.
+                    by_size = [c for c in search_candidates
+                               if size_plausible(c, dpos, dquat, target)]
+                    kept = [c for c in by_size
+                            if colour_plausible(frame, c, ref_colour)]
+                    n_size = len(search_candidates) - len(by_size)
+                    n_colour = len(by_size) - len(kept)
+                    if n_size or n_colour:
+                        size_rejected_total += n_size
+                        colour_rejected_total += n_colour
                         # Rate-limited rather than once-only: how often this
                         # fires is the measurement, and a single line at the
                         # start of a flight cannot show it.
                         if time.time() > size_log_after:
-                            log_event(f"Boyut elemesi: {len(search_candidates)} adaydan "
-                                      f"{len(kept)} tanesi '{target}' boyutunda olabilir "
-                                      f"(toplam {size_rejected_total} eleme).")
+                            log_event(f"Eleme: {len(search_candidates)} adaydan "
+                                      f"{n_size} boyut, {n_colour} renk -- "
+                                      f"{len(kept)} kaldi "
+                                      f"(toplam boyut {size_rejected_total}, "
+                                      f"renk {colour_rejected_total}).")
                             size_log_after = time.time() + SIZE_LOG_INTERVAL
                     search_candidates = kept
 
