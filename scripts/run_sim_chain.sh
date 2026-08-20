@@ -39,7 +39,17 @@ WORLD="${WORLD:-dronions_scenario}"
 # a ceiling under the walls; the scenario world keeps the high one, since its
 # 3 m test wall is there to be climbed.
 case "$WORLD" in
-    *room*) export DRONIONS_MAX_SEARCH_ALT="${DRONIONS_MAX_SEARCH_ALT:-2.1}" ;;
+    *room*)
+        export DRONIONS_MAX_SEARCH_ALT="${DRONIONS_MAX_SEARCH_ALT:-2.1}"
+        # The room is 5 x 4 m with walls at x -1.5..3.5 and y -2..2. The
+        # default area is the scenario world's and reaches x=5.5, two metres
+        # past the east wall, so the sweep was aiming at walls by design and an
+        # inspection near one carried the drone outside. Inset from the walls
+        # by rather more than the airframe's own half-width.
+        export DRONIONS_AREA_X="${DRONIONS_AREA_X:--0.9,2.9}"
+        export DRONIONS_AREA_Y="${DRONIONS_AREA_Y:--1.4,1.4}"
+        export DRONIONS_ROW_SPACING="${DRONIONS_ROW_SPACING:-1.2}"
+        ;;
 esac
 MAKE_TARGET="${MAKE_TARGET:-gz_x500_dronions_$WORLD}"
 # Seconds to wait after the node starts before typing the target, so the drone

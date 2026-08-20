@@ -192,9 +192,25 @@ AVOID_TURN_SECONDS = (2.0, 5.0)
 # origin. Sized to cover the object row (x=3.5, y=0.4..3.6) and the ground
 # either side of the wall (x=1.75, y=-0.5..3.5) with margin, without sending
 # the drone off into empty world.
-SEARCH_AREA_X = (-1.0, 5.5)
-SEARCH_AREA_Y = (-3.0, 5.0)
-SEARCH_ROW_SPACING = 2.0    # m between sweep rows
+#
+# Settable, because it is a property of the room and not of the software. The
+# scenario world's default sends the sweep to x=5.5, which is two metres beyond
+# the room's east wall -- so in the room the drone was flying at walls as a
+# matter of course, and an inspection that started near one carried it outside.
+def _area(env, default):
+    raw = os.getenv(env)
+    if not raw:
+        return default
+    try:
+        lo, hi = (float(v) for v in raw.split(","))
+        return (lo, hi)
+    except ValueError:
+        return default
+
+
+SEARCH_AREA_X = _area("DRONIONS_AREA_X", (-1.0, 5.5))
+SEARCH_AREA_Y = _area("DRONIONS_AREA_Y", (-3.0, 5.0))
+SEARCH_ROW_SPACING = float(os.getenv("DRONIONS_ROW_SPACING", "2.0"))
 WAYPOINT_RADIUS = 0.8       # m; close enough to count as reached
 # A waypoint sitting behind the wall can never be reached. Abandon it rather
 # than let one blocked point stall the whole sweep.
@@ -447,6 +463,13 @@ INSPECT_AFTER_SECONDS = 45.0
 INSPECT_STANDOFF = 0.9          # m from the surface centre, horizontally
 INSPECT_SWEEP_SECONDS = 20.0    # s spent crossing one surface
 INSPECT_SPEED = 0.18            # m/s
+# A lidar reading is only believed as a surface top inside this band. Below it
+# is the floor seen from beside the furniture; above it is a wall or nothing.
+INSPECT_TOP_MIN = 0.30          # m
+INSPECT_TOP_MAX = 1.60          # m
+# Never inspect lower than this, whatever the surface estimates say. The
+# airframe is 0.68 m across and the room is full of things 0.45 to 1.0 m tall.
+INSPECT_MIN_ALTITUDE = 1.15     # m
 
 # How far the drone may drift while waiting for the model before its answer
 # stops describing the view it was asked about. The crops are boxes measured in
@@ -1824,14 +1847,35 @@ def main():
                 # table is usually 0.75 m and this room's is 1.015, which is
                 # the difference between looking along the top and flying into
                 # it.
+                # The lidar can raise the stored height, never lower it.
+                #
+                # Lowering it is what put the drone into the furniture. The
+                # reading is taken while still closing on the surface, so the
+                # drone is usually beside it over open floor and the lidar
+                # reports the floor: measured, the sofa's top "corrected" from
+                # 0.45 to 0.20, the desk's from 0.75 to 0.30, the chair's from
+                # 0.45 to 0.12 -- each one dropping the flight altitude further
+                # until it hit something and left the room.
+                #
+                # The asymmetry is real, not a fudge. A reading higher than
+                # expected means the surface is taller than its name suggests
+                # and the drone must stay up; a reading lower than expected is
+                # almost always the floor next to it, and acting on it is
+                # exactly the dangerous direction.
                 if gap < INSPECT_STANDOFF * 1.6:
                     below = node.current_altitude() - node.ground_clearance()
-                    if below > 0.1 and abs(below - inspect_item["top"]) > 0.15:
+                    if (INSPECT_TOP_MIN < below < INSPECT_TOP_MAX
+                            and below > inspect_item["top"] + 0.15):
                         log_event(f"{inspect_item['name']} ustu olculdu: "
-                                  f"{below:.2f} m (tahmin {inspect_item['top']:.2f}).")
+                                  f"{below:.2f} m -- tahminden "
+                                  f"({inspect_item['top']:.2f}) yuksek, "
+                                  f"yukseltiliyor.")
                         inspect_item["top"] = below
-                node.set_target_altitude(inspect_item["top"]
-                                         + TARGET_SURFACE_CLEARANCE)
+                # And a floor-referenced floor under all of it, so no chain of
+                # surface estimates can walk the drone down into the room.
+                node.set_target_altitude(max(INSPECT_MIN_ALTITUDE,
+                                             inspect_item["top"]
+                                             + TARGET_SURFACE_CLEARANCE))
 
                 t = Twist()
                 t.linear.z = compute_altitude_vz(node.current_altitude(),
@@ -2009,7 +2053,17 @@ def main():
                                                   node.orientation(), plane_z=0.0)
                             if not where:
                                 continue
-                            if surfaces.note(c.label.lower(), (where[0], where[1]), top):
+                            # Inside the searched area or not at all. Furniture
+                        # is localized by the same ray projection as anything
+                        # else, and a shallow ray on a large object lands a
+                        # long way out -- one run catalogued a "desk" at
+                        # (1.2, -0.3) where there is open floor, and flying to
+                        # a surface that is not there is how the drone ended up
+                        # outside the room.
+                        if not (SEARCH_AREA_X[0] <= where[0] <= SEARCH_AREA_X[1]
+                                and SEARCH_AREA_Y[0] <= where[1] <= SEARCH_AREA_Y[1]):
+                            continue
+                        if surfaces.note(c.label.lower(), (where[0], where[1]), top):
                                 log_event(f"Yuzey bulundu: {c.label} "
                                           f"({where[0]:.1f}, {where[1]:.1f}), "
                                           f"tahmini ust {top:.2f} m. "
