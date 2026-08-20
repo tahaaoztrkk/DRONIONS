@@ -136,6 +136,21 @@ class Dialogue:
         self._last_narration_text = None
         self.say(f"{target} aranıyor.")
 
+    def extend_search(self, seconds, reason=""):
+        """Give the current search more time, because something changed.
+
+        The deadline is derived from how long one sweep of the area takes, so
+        it is the right bound for sweeping and the wrong one for anything else.
+        Going to inspect surfaces close up is slower per square metre and is
+        the fallback for exactly the targets the sweep cannot find -- cutting
+        it off on the sweep's clock means the expensive search never gets to
+        finish, having already spent the cheap one.
+        """
+        if self.target is None or self._search_started is None:
+            return
+        self._timeout += max(0.0, seconds)
+        return reason
+
     def search_expired(self):
         return (self.target is not None and self._search_started is not None
                 and time.time() - self._search_started > self._timeout)

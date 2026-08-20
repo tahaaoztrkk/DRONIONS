@@ -456,9 +456,16 @@ SURFACE_TOPS = {
 SURFACE_SCAN_INTERVAL = 3.0     # s
 # Two surfaces closer than this are taken to be the same one seen again.
 SURFACE_MERGE_RADIUS = 0.9      # m
-# How long the ordinary sweep gets before the drone starts visiting surfaces.
-# Long enough that an easy target is found the cheap way first.
-INSPECT_AFTER_SECONDS = 45.0
+# How many full sweeps the cheap search gets before the drone starts visiting
+# surfaces, derived from the pattern rather than picked.
+#
+# A fixed 45 s was picked, and in this room a full lap takes 73 -- so inspection
+# took over at 62% of one pass, before the sweep had covered the room even once.
+# That is a straight loss for anything the sweep can find: the mug was being
+# found the cheap way and got worse, while the extra flying spent API calls on
+# repeated views of one surface. Inspection is the expensive fallback, so it
+# starts only once the cheap thing has genuinely been tried.
+INSPECT_AFTER_SWEEPS = 1.0
 # Where to hold while looking along a surface, and how far to travel across it.
 INSPECT_STANDOFF = 0.9          # m from the surface centre, horizontally
 INSPECT_SWEEP_SECONDS = 20.0    # s spent crossing one surface
@@ -2073,15 +2080,21 @@ def main():
                     # Long enough on the cheap sweep. If the target has not turned
                     # up and there is somewhere it could plausibly be sitting, go
                     # and look along it from close range.
-                    if (target and len(surfaces)
-                            and search_started_at
-                            and time.time() - search_started_at > INSPECT_AFTER_SECONDS):
+                    if (target and len(surfaces) and search_started_at
+                            and time.time() - search_started_at
+                            > wanderer.sweep_seconds() * INSPECT_AFTER_SWEEPS):
                         sx, sy, _ = node.horizontal_pose()
                         item = surfaces.next_unvisited((sx, sy))
                         if item is not None:
                             inspect_item = item
                             inspect_until = 0.0
                             current_phase = PHASE_INSPECT
+                            # The give-up clock was sized for sweeping. Looking
+                            # along a surface is slower and is the fallback for
+                            # the targets sweeping cannot find, so it needs its
+                            # own time rather than the remainder of someone
+                            # else's.
+                            dialogue.extend_search(INSPECT_SWEEP_SECONDS * 1.6)
                             log_event(f"Suprme sonucsuz -- {item['name']} "
                                       f"({item['xy'][0]:.1f}, {item['xy'][1]:.1f}) "
                                       f"yuzeyine gidip yakindan bakiliyor.")
