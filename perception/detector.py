@@ -86,6 +86,21 @@ class YOLOWorldDetector:
 
     # --------------------------------------------------
 
+    def set_target_classes(self, classes):
+        """Detect an arbitrary class list, outside the target machinery.
+
+        The surface scan asks a different question from the search -- "what
+        furniture is in view" rather than "is my mug here" -- so it wants its
+        own classes without a target's prompt expansion or its negatives. The
+        caller restores the target afterwards with set_target.
+        """
+        self.target = ""
+        self.prompts = list(classes)
+        self.negative_prompts = []
+        self.model.set_classes(self.prompts)
+
+    # --------------------------------------------------
+
     def get_target(self):
 
         return self.target

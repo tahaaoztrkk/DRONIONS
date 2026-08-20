@@ -138,6 +138,21 @@ PHASE_TRACK = "YOLO TRACKING"
 # and the size check dropped it, and it spent the next minute confirming the
 # same laptop five times over. The task was already finished at the first line.
 PHASE_DONE = "ARRIVED"
+# Looking along a surface rather than across the room.
+#
+# The sweep runs at cruise height, and from there the objects the scenarios ask
+# for are a few dozen pixels: measured at real search viewpoints, the phone is
+# detected in one of six, the book one of six, the mug three of six. Close in
+# they are three times the size. But closing in requires having detected
+# something, which is the thing that is not happening -- so the drone has to be
+# able to decide to go and look somewhere without having seen the target first.
+#
+# Furniture is what makes that possible. It is large, and measured from cruise
+# height the detector finds a chair in 5 viewpoints of 5, a bookshelf 5 of 5, a
+# cabinet 4 of 4, a sofa 3 of 5. Not the table, at 2 of 6 -- a thin top on thin
+# legs is the hardest thing in the room to see, which is why this looks for
+# surfaces as a class rather than for a table.
+PHASE_INSPECT = "INSPECTING SURFACE"
 
 # Horizontal pursuit speeds -- identical meaning to the ground rig
 # (navigator.py's turn/throttle output is unchanged). Interpreted in
@@ -411,6 +426,28 @@ MAX_COUNTER_EXAMPLES = 4
 # the ground the drone was already looking at.
 NEW_TARGET_LOOK_AHEAD = 1.5     # m
 
+# Things people put objects down on, and roughly how high their top is. The
+# heights only have to be good enough to plan an approach: on arrival the
+# downward lidar measures the real one, which in this room is a 1.015 m table
+# against the 0.75 m a table usually is.
+SURFACE_TOPS = {
+    "table": 0.75, "desk": 0.75, "coffee table": 0.45, "nightstand": 0.60,
+    "sofa": 0.45, "couch": 0.45, "armchair": 0.45, "chair": 0.45,
+    "cabinet": 0.90, "counter": 0.90, "sideboard": 0.85,
+    "shelf": 1.00, "bookshelf": 1.00, "bed": 0.55,
+}
+# How often to spend a frame looking for furniture instead of the target.
+SURFACE_SCAN_INTERVAL = 3.0     # s
+# Two surfaces closer than this are taken to be the same one seen again.
+SURFACE_MERGE_RADIUS = 0.9      # m
+# How long the ordinary sweep gets before the drone starts visiting surfaces.
+# Long enough that an easy target is found the cheap way first.
+INSPECT_AFTER_SECONDS = 45.0
+# Where to hold while looking along a surface, and how far to travel across it.
+INSPECT_STANDOFF = 0.9          # m from the surface centre, horizontally
+INSPECT_SWEEP_SECONDS = 20.0    # s spent crossing one surface
+INSPECT_SPEED = 0.18            # m/s
+
 # How far the drone may drift while waiting for the model before its answer
 # stops describing the view it was asked about. The crops are boxes measured in
 # one frame; applied after a yaw of any size they point at something else.
@@ -630,6 +667,58 @@ def hold_altitude_twist(current_z: float) -> Twist:
     twist = Twist()
     twist.linear.z = compute_altitude_vz(current_z)
     return twist
+
+
+class Surfaces:
+    """Where in the room things can have been put down.
+
+    Built during the ordinary sweep, from detections of furniture rather than
+    of the target. That is the whole point: the drone can decide to go and look
+    at a table without having seen anything on it, which is the deadlock the
+    small objects were stuck in.
+
+    Positions are the furniture's own, so they are only as good as the
+    projection -- which for something a metre across is good enough to fly to.
+    The height stored is a guess from the name and is corrected on arrival by
+    the downward lidar, since a table is usually 0.75 m and this room's is
+    1.015.
+    """
+
+    def __init__(self):
+        self._items = []
+
+    def note(self, name, xy, top_z):
+        for it in self._items:
+            if math.hypot(it["xy"][0] - xy[0], it["xy"][1] - xy[1]) < SURFACE_MERGE_RADIUS:
+                it["seen"] += 1
+                return False
+        self._items.append({"name": name, "xy": xy, "top": top_z,
+                            "seen": 1, "visited": False})
+        return True
+
+    def next_unvisited(self, from_xy):
+        """Nearest surface not yet looked at, or None."""
+        left = [it for it in self._items if not it["visited"]]
+        if not left:
+            return None
+        return min(left, key=lambda it: math.hypot(it["xy"][0] - from_xy[0],
+                                                   it["xy"][1] - from_xy[1]))
+
+    def mark_visited(self, item):
+        item["visited"] = True
+
+    def reset_visits(self):
+        """A new target means every surface is worth looking at again."""
+        for it in self._items:
+            it["visited"] = False
+
+    def summary(self):
+        return ", ".join(f"{it['name']}({it['xy'][0]:.1f},{it['xy'][1]:.1f})"
+                         + ("" if not it["visited"] else "*")
+                         for it in self._items) or "yok"
+
+    def __len__(self):
+        return len(self._items)
 
 
 class SearchPattern:
@@ -1489,6 +1578,11 @@ def main():
     locked_track_id = None
     locked_point = (0.5, 0.5)
     wanderer = SearchPattern(SWEEP_START)
+    surfaces = Surfaces()
+    surface_scan_after = 0.0
+    search_started_at = 0.0
+    inspect_item = None
+    inspect_until = 0.0
     # Wall-clock grace, because the frame count turned out to mean something
     # very different from what it looked like. The loop runs near 20 Hz, so 60
     # frames is three seconds -- and a phone detected at 0.29 confidence drops
@@ -1584,6 +1678,12 @@ def main():
                     announced_arrival = False
                     position_reported = False
                     done_cands = []
+                    # A new target starts its own clock, and every surface is
+                    # worth a second look -- the last search's visits say
+                    # nothing about where this object is.
+                    search_started_at = time.time()
+                    inspect_item = None
+                    surfaces.reset_visits()
                     last_seen_xy = None
                     target_surface_z = None
                     node.set_target_altitude(HOVER_ALTITUDE)
@@ -1709,6 +1809,62 @@ def main():
                 previous_phase = current_phase
                 continue
 
+            if current_phase == PHASE_INSPECT:
+                # Fly to the surface, then travel along it while the ordinary
+                # detection and confirmation keep running underneath -- this
+                # phase only decides where the drone is, not what counts as a
+                # find, so a target spotted here is confirmed exactly as one
+                # spotted during the sweep.
+                ix, iy = inspect_item["xy"]
+                dx, dy, dyaw = node.horizontal_pose()
+                gap = math.hypot(ix - dx, iy - dy)
+
+                # The stored height is a guess from the furniture's name. Once
+                # over it the downward lidar knows better, and it matters: a
+                # table is usually 0.75 m and this room's is 1.015, which is
+                # the difference between looking along the top and flying into
+                # it.
+                if gap < INSPECT_STANDOFF * 1.6:
+                    below = node.current_altitude() - node.ground_clearance()
+                    if below > 0.1 and abs(below - inspect_item["top"]) > 0.15:
+                        log_event(f"{inspect_item['name']} ustu olculdu: "
+                                  f"{below:.2f} m (tahmin {inspect_item['top']:.2f}).")
+                        inspect_item["top"] = below
+                node.set_target_altitude(inspect_item["top"]
+                                         + TARGET_SURFACE_CLEARANCE)
+
+                t = Twist()
+                t.linear.z = compute_altitude_vz(node.current_altitude(),
+                                                 node.target_altitude(),
+                                                 node.ground_clearance())
+                bearing = math.atan2(iy - dy, ix - dx)
+                err = math.atan2(math.sin(bearing - dyaw), math.cos(bearing - dyaw))
+                t.angular.z = max(-AVOID_ANGULAR, min(AVOID_ANGULAR, 1.5 * err))
+                if gap > INSPECT_STANDOFF and abs(err) < 0.6:
+                    t.linear.x = INSPECT_SPEED
+                elif gap <= INSPECT_STANDOFF:
+                    # Arrived. Cross the surface rather than hovering at one
+                    # spot: a mug is found from one viewpoint in three even
+                    # close up, so what makes this work is looking from several.
+                    if not inspect_until:
+                        inspect_until = time.time() + INSPECT_SWEEP_SECONDS
+                        log_event(f"{inspect_item['name']} ustunde "
+                                  f"{node.current_altitude():.2f} m'de tarama "
+                                  f"basladi.")
+                    t.linear.y = INSPECT_SPEED
+                if inspect_until and time.time() > inspect_until:
+                    surfaces.mark_visited(inspect_item)
+                    log_event(f"{inspect_item['name']} tarandi, bulunamadi. "
+                              f"Kalan yuzeyler: {surfaces.summary()}")
+                    inspect_item = None
+                    inspect_until = 0.0
+                    current_phase = PHASE_SEARCH
+                    node.set_target_altitude(HOVER_ALTITUDE)
+                    previous_phase = PHASE_INSPECT
+                    continue
+                node.set_desired_twist(t)
+                previous_phase = current_phase
+
             if current_phase == PHASE_SEARCH and previous_phase != PHASE_SEARCH:
                 # Just lost it. Whatever broke the track -- drifting out of
                 # frame, a failed size check, a few blank frames -- says
@@ -1724,7 +1880,12 @@ def main():
                               f"({last_seen_xy[0]:.1f}, {last_seen_xy[1]:.1f}).")
             previous_phase = current_phase
 
-            if current_phase == PHASE_SEARCH:
+            # Detection and confirmation run in both phases. Where the drone
+            # is, is a separate question from what counts as a find, and
+            # inspecting a surface changes only the first -- so a target
+            # spotted from above a table is confirmed exactly as one spotted
+            # mid-sweep, with the same gates and the same crops.
+            if current_phase in (PHASE_SEARCH, PHASE_INSPECT):
                 # A search that never ends is not an answer anyone can act on.
                 if dialogue.search_expired():
                     dialogue.give_up()
@@ -1793,38 +1954,85 @@ def main():
                               f"hedef_wp={wanderer.current_waypoint()}")
                     pose_log_after = time.time() + POSE_LOG_INTERVAL
 
-                sweep_twist = wanderer.twist(node.obstacle_ahead(),
-                                             node.current_altitude(), sx, sy, syaw)
-                # Slide away from anything the drone is flying too close
-                # alongside. This is separate from the avoidance turn, which
-                # answers "is my path blocked" -- a wall abeam blocks nothing
-                # and was correctly ignored right up until the propellers
-                # touched it. Lateral only: the sweep keeps its heading and
-                # keeps making progress along the row.
-                left, right = node.side_clearance()
-                if min(left, right) < MIN_SIDE_CLEARANCE:
-                    sweep_twist.linear.y = (SIDE_PUSH_SPEED if right < left
-                                            else -SIDE_PUSH_SPEED)
-                    if time.time() > side_log_after:
-                        log_event(f"Yan bosluk dar: sol {left:.2f} m sag {right:.2f} m "
-                                  f"-- {'sola' if right < left else 'saga'} kaciliyor.")
-                        side_log_after = time.time() + SIDE_LOG_INTERVAL
-                node.set_desired_twist(sweep_twist)
+                # The sweep's own motion, altitude and surface bookkeeping
+                # belong to the sweep. While inspecting a surface the drone
+                # is being flown by that phase instead, and only the
+                # detection below is shared.
+                if current_phase == PHASE_SEARCH:
+                    sweep_twist = wanderer.twist(node.obstacle_ahead(),
+                                                 node.current_altitude(), sx, sy, syaw)
+                    # Slide away from anything the drone is flying too close
+                    # alongside. This is separate from the avoidance turn, which
+                    # answers "is my path blocked" -- a wall abeam blocks nothing
+                    # and was correctly ignored right up until the propellers
+                    # touched it. Lateral only: the sweep keeps its heading and
+                    # keeps making progress along the row.
+                    left, right = node.side_clearance()
+                    if min(left, right) < MIN_SIDE_CLEARANCE:
+                        sweep_twist.linear.y = (SIDE_PUSH_SPEED if right < left
+                                                else -SIDE_PUSH_SPEED)
+                        if time.time() > side_log_after:
+                            log_event(f"Yan bosluk dar: sol {left:.2f} m sag {right:.2f} m "
+                                      f"-- {'sola' if right < left else 'saga'} kaciliyor.")
+                            side_log_after = time.time() + SIDE_LOG_INTERVAL
+                    node.set_desired_twist(sweep_twist)
 
-                # Say roughly where the search has got to. Rate-limited inside
-                # Dialogue: a running commentary would compete with the hearing
-                # a blind user needs for their own safety.
-                if target:
-                    wx, wy = wanderer.current_waypoint()
-                    _, wbrg = relative_to_user((wx, wy), USER_POSITION, USER_YAW)
-                    dialogue.narrate(f"{describe_direction(wbrg)} arıyorum.")
-                # The sweep owns its own altitude now: it climbs to look over
-                # what it cannot get around, and drops back to cruise after.
-                node.set_target_altitude(wanderer.search_altitude())
-                climb_note = wanderer.take_climb_note()
-                if climb_note:
-                    log_event(climb_note)
-                    print(f"\n[^] {climb_note}")
+                    # Say roughly where the search has got to. Rate-limited inside
+                    # Dialogue: a running commentary would compete with the hearing
+                    # a blind user needs for their own safety.
+                    if target:
+                        wx, wy = wanderer.current_waypoint()
+                        _, wbrg = relative_to_user((wx, wy), USER_POSITION, USER_YAW)
+                        dialogue.narrate(f"{describe_direction(wbrg)} arıyorum.")
+                    # The sweep owns its own altitude now: it climbs to look over
+                    # what it cannot get around, and drops back to cruise after.
+                    node.set_target_altitude(wanderer.search_altitude())
+                    climb_note = wanderer.take_climb_note()
+                    if climb_note:
+                        log_event(climb_note)
+                        print(f"\n[^] {climb_note}")
+
+                    # Spend an occasional frame looking for furniture rather than
+                    # for the target. This is what lets the drone decide to go and
+                    # inspect a table without having seen anything on it -- the
+                    # deadlock the small objects sit in, since deciding to close in
+                    # otherwise requires the detection that closing in is meant to
+                    # produce.
+                    if target and time.time() > surface_scan_after:
+                        surface_scan_after = time.time() + SURFACE_SCAN_INTERVAL
+                        detector.set_target_classes(list(SURFACE_TOPS))
+                        for c in filter_candidates(detector.detect(frame)):
+                            top = SURFACE_TOPS.get(c.label.lower())
+                            if top is None:
+                                continue
+                            where = locate_target(c, node.pose_xyz(),
+                                                  node.orientation(), plane_z=0.0)
+                            if not where:
+                                continue
+                            if surfaces.note(c.label.lower(), (where[0], where[1]), top):
+                                log_event(f"Yuzey bulundu: {c.label} "
+                                          f"({where[0]:.1f}, {where[1]:.1f}), "
+                                          f"tahmini ust {top:.2f} m. "
+                                          f"Bilinen yuzeyler: {surfaces.summary()}")
+                        detector.set_target(target)
+
+                    # Long enough on the cheap sweep. If the target has not turned
+                    # up and there is somewhere it could plausibly be sitting, go
+                    # and look along it from close range.
+                    if (target and len(surfaces)
+                            and search_started_at
+                            and time.time() - search_started_at > INSPECT_AFTER_SECONDS):
+                        sx, sy, _ = node.horizontal_pose()
+                        item = surfaces.next_unvisited((sx, sy))
+                        if item is not None:
+                            inspect_item = item
+                            inspect_until = 0.0
+                            current_phase = PHASE_INSPECT
+                            log_event(f"Suprme sonucsuz -- {item['name']} "
+                                      f"({item['xy'][0]:.1f}, {item['xy'][1]:.1f}) "
+                                      f"yuzeyine gidip yakindan bakiliyor.")
+                            dialogue.say(f"{item['name']} üstüne yakından bakıyorum.")
+                            continue
 
                 # Cheap layer first. YOLO is already on the GPU and costs
                 # nothing per frame, so it screens every frame at camera rate
