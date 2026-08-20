@@ -404,6 +404,11 @@ GEMINI_AREA_RATIO_MAX = 6.0
 # causes the confusion while leaving the target's own photo the first and most
 # prominent one.
 MAX_COUNTER_EXAMPLES = 4
+
+# How far ahead the "look where you already are" scan is centred when a new
+# target arrives. Just beyond the near edge of the picture, so the arc sweeps
+# the ground the drone was already looking at.
+NEW_TARGET_LOOK_AHEAD = 1.5     # m
 # The sweep usually catches the target at the edge of the frame -- the one
 # confirmed in flight sat at (0.11, 0.93), a corner. Handing that straight to
 # tracking meant driving forward while barely holding it in view, and it was
@@ -1547,6 +1552,18 @@ def main():
                     last_seen_xy = None
                     target_surface_z = None
                     node.set_target_altitude(HOVER_ALTITUDE)
+                    # Look at what is already in front before flying anywhere.
+                    # The sweep otherwise heads straight for its next waypoint,
+                    # so asking for the book while the drone is hovering over
+                    # the book turns it away from it -- the new target resets
+                    # the search and the search means "go to the next row".
+                    # Scanning where it stands costs a few seconds and is where
+                    # the answer usually is: whatever prompted the new command
+                    # is generally something the user just heard about.
+                    hx, hy, hyaw = node.horizontal_pose()
+                    wanderer.revisit((hx + NEW_TARGET_LOOK_AHEAD * math.cos(hyaw),
+                                      hy + NEW_TARGET_LOOK_AHEAD * math.sin(hyaw)))
+                    log_event("Yeni hedef -- once bulunulan yer taraniyor.")
                 elif act['action'] == 'cancel':
                     target = None
                     current_phase = PHASE_SEARCH
