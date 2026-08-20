@@ -128,7 +128,8 @@ def _spoken_context(text: str) -> str:
 
 def select_candidate(frame: np.ndarray, candidates, target: str,
                      reference_img_path: str = None,
-                     other_refs: dict = None) -> dict:
+                     other_refs: dict = None,
+                     extra_ref_paths=None) -> dict:
     """Asks Gemini which of YOLO's detections is the target.
 
     Replaces asking "is it in this view, and where?" with "here are the N
@@ -168,7 +169,8 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
             # this it".
             print(f"[MEMORY BANK] Karsi ornekler: {', '.join(others)}")
             prompt.append(
-                f"The FIRST image is a reference photo of my '{target}'. "
+                f"The first images are reference photos of my '{target}', "
+                f"taken from different angles. "
                 f"The next {len(others)} images are reference photos of OTHER "
                 f"objects of mine that are also in this room and are NOT what I "
                 f"am looking for: " + ", ".join(others) + ". They are shown so "
@@ -178,7 +180,8 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
             )
         else:
             prompt.append(
-                "The FIRST image is a reference photo of it. "
+                "The first images are reference photos of it, from "
+                "different angles. "
                 "The images after that are numbered crops taken from the current camera view."
             )
     else:
@@ -234,6 +237,17 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
 
     if reference_img_path and os.path.exists(reference_img_path):
         contents.append(PIL.Image.open(reference_img_path))
+        # More than one angle where they exist. An object photographed from one
+        # side is not a description of it: the laptop shows a dark lid from
+        # behind and a blue screen from the front, and asking the model to
+        # recognise the second from a picture of the first is asking it to
+        # guess. Measured, this does nothing for the colour gate -- the extra
+        # hues do not happen to cover the crops it rejects -- so the value, if
+        # any, is here.
+        for extra in (extra_ref_paths or []):
+            if extra != reference_img_path and os.path.exists(extra):
+                contents.append(f"My {target}, another angle:")
+                contents.append(PIL.Image.open(extra))
         for other_name, other_path in others.items():
             contents.append(f"NOT my {target} -- this is my {other_name}:")
             contents.append(PIL.Image.open(other_path))

@@ -119,7 +119,8 @@ from utils.prompts import get_prompts
 
 from perception.detector import YOLOWorldDetector
 from perception.filters import filter_candidates
-from perception.appearance import colour_plausible, reference_signature, colour_signature
+from perception.appearance import (colour_plausible, reference_signature,
+                                   reference_signatures, colour_signature)
 from perception.tracker import Tracker
 from navigation.navigator import get_navigation_decision
 from navigation.spatial import (locate_target, describe_target,
@@ -502,15 +503,29 @@ def ref_path_for(target):
     picture: "is there any writing on it?" is about the user's own object, so
     the model should still have the reference in hand.
     """
+    paths = ref_paths_for(target)
+    return paths[0] if paths else None
+
+
+def ref_paths_for(target):
+    """Every reference photo on file for a target, the primary one first.
+
+    Extra angles are stored alongside as name_2, name_3 and so on. An object
+    photographed from one side is not a description of it -- the laptop reads
+    hue 17 from behind and 238 from the front, and was being rejected against
+    its own single reference.
+    """
     if not target:
-        return None
+        return []
     clean = target.lower().strip()
+    out = []
     for name in (clean, clean.replace(" ", "_")):
-        for ext in (".jpg", ".png", ".jpeg"):
-            path = os.path.join("memory", name + ext)
-            if os.path.exists(path):
-                return path
-    return None
+        for suffix in ("", "_2", "_3", "_4", "_5"):
+            for ext in (".jpg", ".png", ".jpeg"):
+                path = os.path.join("memory", name + suffix + ext)
+                if os.path.exists(path) and path not in out:
+                    out.append(path)
+    return out
 
 
 def other_refs_for(target):
@@ -1532,10 +1547,11 @@ def main():
                     detector.set_target(target)
                     # Colour signature of the memory-bank photo, computed once
                     # per target rather than per frame.
-                    ref_colour = reference_signature(ref_path_for(target))
+                    ref_colour = reference_signatures(ref_paths_for(target))
                     if ref_colour:
-                        log_event(f"Referans rengi: ton {ref_colour[0]:.0f} derece, "
-                                  f"doygunluk {ref_colour[1]:.0f}")
+                        log_event(
+                            f"Referans rengi ({len(ref_colour)} aci): "
+                            + ", ".join(f"ton {r[0]:.0f}" for r in ref_colour))
                     else:
                         log_event(f"'{target}' icin kullanilabilir referans rengi yok "
                                   f"-- renk elemesi devre disi.")
@@ -1946,6 +1962,7 @@ def main():
                         vlm_asked_at = node.horizontal_pose()
                         result = select_candidate(frame, search_candidates, target,
                                                   other_refs=other_refs_for(target),
+                                                  extra_ref_paths=ref_paths_for(target),
                                                   reference_img_path=ref_path)
                         moved, turned = pose_delta(vlm_asked_at,
                                                    node.horizontal_pose())

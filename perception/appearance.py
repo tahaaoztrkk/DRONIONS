@@ -130,6 +130,26 @@ def reference_signature(reference_img_path: str) -> Optional[Tuple[float, float]
     return colour_signature(_centre_crop(img, (0, 0, img.shape[1], img.shape[0])))
 
 
+def reference_signatures(paths) -> list:
+    """Signatures of every reference photo on file for a target.
+
+    Returns a list because an object photographed from one side is not a
+    description of it: the laptop is hue 17 from behind and 238 from the front.
+    Unreadable files are skipped rather than becoming a None that would switch
+    the gate off entirely.
+    """
+    if not paths:
+        return []
+    if isinstance(paths, str):
+        paths = [paths]
+    out = []
+    for path in paths:
+        sig = reference_signature(path)
+        if sig:
+            out.append(sig)
+    return out
+
+
 def colour_plausible(frame: np.ndarray, candidate, ref_sig,
                      max_hue: float = MAX_HUE_DEGREES) -> bool:
     """Could this detection be the reference object's colour?
@@ -139,11 +159,23 @@ def colour_plausible(frame: np.ndarray, candidate, ref_sig,
     than guesses, because the cost of wrongly rejecting the target is a search
     that never succeeds, while the cost of letting one extra candidate through
     is one API call.
+
+    Several reference signatures may be given, one per photographed angle, and
+    matching any of them is enough. Measured on the room's objects, a single
+    angle is not a description of an object whose look changes with the view:
+    the laptop reads hue 17 from behind and 238 from the front, the mug 174 to
+    354 around its rim, and each was being rejected against its own reference.
+    Flat, single-coloured things do not move -- the phone sits at 38 from every
+    angle and the book at 220 -- so this loosens the gate exactly where the
+    object varies and leaves it tight where it does not. The pair that has to
+    stay apart still does: 178 degrees between the phone and the book.
     """
     if not ref_sig:
         return True
+    sigs = ref_sig if isinstance(ref_sig, (list, tuple)) and ref_sig \
+        and isinstance(ref_sig[0], (list, tuple)) else [ref_sig]
     crop = _centre_crop(frame, candidate.bbox)
     sig = colour_signature(crop) if crop is not None else None
     if not sig:
         return True
-    return hue_distance(sig[0], ref_sig[0]) <= max_hue
+    return any(hue_distance(sig[0], r[0]) <= max_hue for r in sigs if r)

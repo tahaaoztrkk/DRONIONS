@@ -36,6 +36,7 @@ import rclpy
 sys.path.insert(0, '/home/taha/DRONIONS')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from navigation.spatial import CAMERA_HFOV
+from perception.appearance import reference_signature
 from perception.detector import YOLOWorldDetector
 from perception.filters import filter_candidates
 from gz_pose import PoseReader, find_world
@@ -51,13 +52,27 @@ from experiment_small_objects import (Grab, MODEL, fresh, place,
 # the table around it, and the two do not match on colour at all -- measured,
 # the laptop's own reference rejected the laptop at every viewpoint tried. What
 # the reference has to represent is the object as the gate will see it.
+# Standoffs are a compromise, and worth naming as one. Far enough that the crop
+# resembles what the gate will see during a search; close enough that the
+# detector actually finds the object, which at 1.4 m it does not for the phone
+# -- measured one viewpoint in six. A reference can only be made of something
+# that was detected, so the near end wins where the two disagree, and the
+# multiple angles carry the slack.
 TARGETS = {
-    'phone':  (2.62, -0.16, 1.019, 0.160, 1.40),
-    'mug':    (2.62,  0.24, 1.060, 0.166, 1.40),
-    'book':   (3.05, -0.22, 1.041, 0.210, 1.50),
-    'laptop': (3.05,  0.22, 1.110, 0.375, 1.70),
+    'phone':  (2.62, -0.16, 1.019, 0.160, 0.95),
+    'mug':    (2.62,  0.24, 1.060, 0.166, 1.00),
+    'book':   (3.05, -0.22, 1.041, 0.210, 1.05),
+    'laptop': (3.05,  0.22, 1.110, 0.375, 1.40),
 }
 OUT_DIR = 'memory'
+# Bearings around the object, and how high above it to look from. One angle is
+# not a description of an object whose appearance turns with the view: measured
+# in the room, the laptop reads hue 17 from behind and 238 from the front, the
+# mug 174 to 354 around its rim, and each was being rejected against its own
+# single reference. Flat single-coloured things -- the phone, the book -- read
+# the same from everywhere, so the extra angles cost them nothing.
+VIEW_ANGLES = [(180, 0.70), (135, 0.65), (225, 0.65), (90, 0.60)]
+TRY_SCALES = (1.0, 1.45, 0.75)
 # Padding around the object, as a fraction of its own width.
 #
 # 0.45 was chosen to give the model some context and it destroyed the colour
@@ -105,10 +120,19 @@ def main() -> None:
         # the reference came out as wooden table. A reference the detector
         # cannot recognise is also the wrong reference to be comparing against.
         det.set_target(name)
-        best = None
-        for dist, side, lift in ((standoff, -0.05, 0.70), (standoff, 0.30, 0.60),
-                                 (standoff * 1.3, -0.05, 0.85), (standoff * 0.7, -0.25, 0.55)):
-            x, y = ox - dist, oy + side
+        shots = []
+        # Two distances per bearing. Detection of these objects is noisy rather
+        # than monotonic in range -- the book was found at 1.5 m and not at
+        # 1.05 m from the same side -- so a single distance per angle throws
+        # away angles for no reason.
+        for bearing, lift in VIEW_ANGLES:
+          got_this_angle = False
+          for scale in TRY_SCALES:
+            if got_this_angle:
+                break
+            ang = math.radians(bearing)
+            dist = standoff * scale
+            x, y = ox + dist * math.cos(ang), oy + dist * math.sin(ang)
             z = oz + lift
             yaw = math.atan2(oy - y, ox - x)
             place(world, MODEL, x, y, z, yaw)
@@ -126,45 +150,35 @@ def main() -> None:
                      if c.bbox[0] <= uv[0] <= c.bbox[2]
                      and c.bbox[1] <= uv[1] <= c.bbox[3]
                      and 0.4 <= (c.bbox[2] - c.bbox[0]) / px0 <= 2.5]
-            if best is None:
-                best = (img, drone, uv, None)
             if boxed:
-                best = (img, drone, uv, max(boxed, key=lambda c: c.confidence))
-                break
-        if best is None:
-            print(f"  {name:8} hicbir bakistan kare alinamadi")
+                shots.append((img, drone, uv,
+                              max(boxed, key=lambda c: c.confidence), bearing))
+                got_this_angle = True
+        if not shots:
+            print(f"  {name:8} hicbir acidan tespit edilemedi")
             continue
-        img, drone, uv, hitbox = best
-        h_img, w_img = img.shape[:2]
-        rng = math.dist(drone, (ox, oy, oz))
-        px = width * focal / rng
-        # Crop the detector's box, but only one that covers where the object
-        # truly is. Geometry alone centres on the model's pose origin, which is
-        # not its visual centre -- the book's origin sits on its spine, so the
-        # crop came out half wooden table and the signature read as wood. The
-        # detector frames what is actually visible; requiring it to contain the
-        # projected ground-truth point keeps it from framing something else.
-        if hitbox is not None:
+        for idx, (img, drone, uv, hitbox, bearing) in enumerate(shots, start=1):
+            h_img, w_img = img.shape[:2]
+            rng = math.dist(drone, (ox, oy, oz))
+            px = width * focal / rng
+            # Crop the detector's box, which frames what is actually
+            # visible. Geometry alone centres on the model's pose origin, and
+            # the book's origin sits on its spine, so that crop came out half
+            # wooden table and read as wood.
             b = hitbox
             pad = (b.bbox[2] - b.bbox[0]) * PAD
             x0, x1 = int(max(0, b.bbox[0] - pad)), int(min(w_img, b.bbox[2] + pad))
             y0, y1 = int(max(0, b.bbox[1] - pad)), int(min(h_img, b.bbox[3] + pad))
-            how = f"tespit kutusu, guven {b.confidence:.2f}"
-        else:
-            half = max(24.0, px * (0.5 + PAD))
-            x0, x1 = int(max(0, uv[0] - half)), int(min(w_img, uv[0] + half))
-            y0, y1 = int(max(0, uv[1] - half)), int(min(h_img, uv[1] + half))
-            how = "geometri (tespit yok)"
-        crop = img[y0:y1, x0:x1]
-        if crop.size == 0:
-            print(f"  {name:8} kirpma bos")
-            continue
-        path = os.path.join(OUT_DIR, f"{name}.jpg")
-        cv2.imwrite(path, crop)
-        from perception.appearance import reference_signature
-        sig = reference_signature(path)
-        print(f"  {name:8} {crop.shape[1]}x{crop.shape[0]} px  {how}  "
-              + (f"ton {sig[0]:.0f}" if sig else "renk yok") + f"  -> {path}")
+            crop = img[y0:y1, x0:x1]
+            if crop.size == 0:
+                continue
+            suffix = "" if idx == 1 else f"_{idx}"
+            path = os.path.join(OUT_DIR, f"{name}{suffix}.jpg")
+            cv2.imwrite(path, crop)
+            sig = reference_signature(path)
+            print(f"  {name:8} aci {bearing:4.0f}  {crop.shape[1]}x{crop.shape[0]} px  "
+                  f"guven {b.confidence:.2f}  "
+                  + (f"ton {sig[0]:.0f}" if sig else "renk yok") + f"  -> {path}")
 
     world_control(world, 'pause: false')
     pose.stop()
