@@ -409,6 +409,25 @@ MAX_COUNTER_EXAMPLES = 4
 # target arrives. Just beyond the near edge of the picture, so the arc sweeps
 # the ground the drone was already looking at.
 NEW_TARGET_LOOK_AHEAD = 1.5     # m
+
+# How far the drone may drift while waiting for the model before its answer
+# stops describing the view it was asked about. The crops are boxes measured in
+# one frame; applied after a yaw of any size they point at something else.
+# Deliberately loose: the drone cannot stop instantly, so some coast is
+# expected and rejecting it would throw away every answer -- each of which
+# costs one of twenty daily API calls. This is a backstop against gross drift,
+# not the fix; the fix is holding still in the first place. The measured drift
+# is logged on every call so the real distribution can set these later.
+VLM_DRIFT_MAX_M = 0.60
+VLM_DRIFT_MAX_RAD = 0.35        # about 20 degrees
+
+
+def pose_delta(before, after):
+    """How far and how much the drone turned between two horizontal poses."""
+    dx, dy = after[0] - before[0], after[1] - before[1]
+    dyaw = math.atan2(math.sin(after[2] - before[2]),
+                      math.cos(after[2] - before[2]))
+    return math.hypot(dx, dy), abs(dyaw)
 # The sweep usually catches the target at the edge of the frame -- the one
 # confirmed in flight sat at (0.11, 0.93), a corner. Handing that straight to
 # tracking meant driving forward while barely holding it in view, and it was
@@ -1913,9 +1932,35 @@ def main():
                         last_vlm_check_time = current_time
                         continue
                     else:
+                        # Stop before asking, and stay stopped until the answer
+                        # comes back. The call takes seconds and the loop blocks
+                        # on it, so the last commanded twist kept being
+                        # published the whole time: the drone flew on, and the
+                        # answer -- crop numbers referring to boxes measured in
+                        # a frame from several seconds ago -- was then applied
+                        # to whatever it happened to be looking at by then.
+                        # From outside it reads as a lurch the moment the reply
+                        # lands, sometimes facing somewhere else entirely.
+                        node.set_desired_twist(
+                            hold_altitude_twist(node.current_altitude()))
+                        vlm_asked_at = node.horizontal_pose()
                         result = select_candidate(frame, search_candidates, target,
                                                   other_refs=other_refs_for(target),
                                                   reference_img_path=ref_path)
+                        moved, turned = pose_delta(vlm_asked_at,
+                                                   node.horizontal_pose())
+                        log_event(f"Gemini beklerken kayma: {moved:.2f} m, "
+                                  f"{math.degrees(turned):.0f} derece.")
+                        if moved > VLM_DRIFT_MAX_M or turned > VLM_DRIFT_MAX_RAD:
+                            # The hold did not hold -- wind, or the answer took
+                            # long enough for the residual to matter. The crops
+                            # no longer describe the view, so the answer cannot
+                            # be trusted to point at anything.
+                            log_event(f"Gemini beklerken {moved:.2f} m / "
+                                      f"{math.degrees(turned):.0f} derece kaydik "
+                                      f"-- cevap kullanilmiyor.")
+                            last_vlm_check_time = current_time
+                            continue
                     msg = result['message']
                     log_event(f"Gemini Cevabı: {msg}")
 
