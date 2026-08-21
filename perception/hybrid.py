@@ -34,12 +34,43 @@ import numpy as np
 from perception.candidate import DetectionCandidate
 from perception.detector import YOLOWorldDetector
 
-# Two boxes overlapping this much are the same object seen twice, once by each
-# model. Left as two candidates they take two of the five crop slots the model
-# is shown, and ask it to choose between a thing and itself.
-MERGE_IOU = 0.55
+# How much of the smaller box has to sit inside the larger before the two are
+# taken to be about the same thing in the picture.
+#
+# Overlap on its own cannot say whether that thing is the target: measured, a
+# world box and a trained box of the same object share between 0.80 and 1.00 of
+# the smaller, and a world box sitting on the *book* while hunting the phone
+# shares up to 0.87 with the trained model's book. The populations overlap, so
+# geometry alone would either leave duplicates or merge a phone with a book.
+#
+# What separates them is the class. Where the trained model has an opinion it
+# is the authority for its own classes -- 97% against 47% -- so a world box
+# landing on something it has identified is resolved by that identification: the
+# same class is a duplicate, a different class is the open model calling a book
+# a phone, which is the confusion this whole thread has been about. World boxes
+# overlapping nothing it recognises are left alone, because they may be objects
+# it was never shown.
+OVERLAP_SAME_THING = 0.55
 DEFAULT_WEIGHTS = os.getenv("DRONIONS_TRAINED_WEIGHTS", "models/room_detector.pt")
 TRAINED_CONF = float(os.getenv("DRONIONS_TRAINED_CONF", "0.25"))
+
+
+def _overlap(a, b) -> float:
+    """Fraction of the smaller box that lies inside the other.
+
+    Not IoU: the two models disagree about extent on small objects -- on the
+    phone one boxed 39x50 and the other 76x70, an IoU of 0.28 -- while the
+    smaller box sat almost entirely inside the larger. Containment is the
+    question being asked, which is whether they are looking at the same thing.
+    """
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+    if inter <= 0:
+        return 0.0
+    smaller = min(max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1]),
+                  max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1]))
+    return inter / smaller if smaller > 0 else 0.0
 
 
 def _iou(a, b) -> float:
@@ -63,6 +94,7 @@ class HybridDetector:
     def __init__(self, weights: str = DEFAULT_WEIGHTS):
         self.world = YOLOWorldDetector()
         self.target = ""
+        self.suppressed = 0
         self.trained = None
         self.trained_classes = []
         if weights and os.path.exists(weights):
@@ -119,22 +151,30 @@ class HybridDetector:
         found = self.world.detect(frame)
         if frame is None or not self.uses_trained():
             return found
-        extra = self._trained_candidates(frame)
-        if not extra:
+        everything = self._trained_candidates(frame, all_classes=True)
+        if not everything:
             return found
-        # Union, with duplicates resolved in the trained model's favour. It is
-        # the more reliable source for its own classes by 97% to 47%, and its
-        # boxes are measurably tighter: against geometry's predicted width the
-        # phone came out 1.05x and the book 1.07x, where the open model gave
-        # 1.16x and missed the phone entirely.
-        merged = list(extra)
+        mine = [c for c in everything if c.label == self.target]
+        merged = list(mine)
         for c in found:
-            if not any(_iou(c.bbox, e.bbox) > MERGE_IOU for e in extra):
+            overlapping = [t for t in everything
+                           if _overlap(c.bbox, t.bbox) > OVERLAP_SAME_THING]
+            if not overlapping:
+                # Nothing the trained model recognises is there. It may be an
+                # object it was never shown, so the open model keeps its say.
                 merged.append(c)
+                continue
+            # It is on something identified. Same class means the two models
+            # found the same thing and one candidate is enough; a different
+            # class means the open model has boxed, say, the book and called it
+            # a phone -- which is the failure this exists to remove.
+            if not any(t.label == self.target for t in overlapping):
+                self.suppressed += 1
         merged.sort(key=lambda c: c.confidence, reverse=True)
         return merged
 
-    def _trained_candidates(self, frame) -> List[DetectionCandidate]:
+    def _trained_candidates(self, frame, all_classes: bool = False
+                            ) -> List[DetectionCandidate]:
         res = self.trained.predict(frame, conf=TRAINED_CONF, verbose=False)[0]
         boxes = res.boxes
         if boxes is None or len(boxes) == 0:
@@ -146,7 +186,7 @@ class HybridDetector:
                                    boxes.conf.tolist(),
                                    boxes.cls.tolist()):
             label = self.trained_classes[int(cls)]
-            if label != self.target:
+            if not all_classes and label != self.target:
                 continue
             x1, y1, x2, y2 = (int(v) for v in xyxy)
             cand = DetectionCandidate(label=label, confidence=float(conf),

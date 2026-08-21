@@ -18,8 +18,20 @@ def filter_candidates(candidates: List[DetectionCandidate]) -> List[DetectionCan
         if cand.relative_area > 0.8:
             continue
             
-        # Reject if area is too small (likely noise)
-        if cand.relative_area < 0.001:
+        # Reject if area is too small (likely noise).
+        #
+        # 0.001 was set when the open-vocabulary detector was the only source,
+        # and it never produced a box that small for a target -- it simply
+        # failed to find small objects at all, so the floor never bit. A model
+        # trained on these objects does find them, and the floor was then
+        # throwing away 6 of 27 correct detections: measured, the phone lands at
+        # 0.00051 of the frame at search range, the book 0.00070, the mug
+        # 0.00091, all of them real and all of them rejected for being small.
+        #
+        # Set below the smallest correct detection measured, with room to spare.
+        # A 250 px box is about 16 px square, which is under anything the
+        # detection thresholds will pass anyway.
+        if cand.relative_area < 0.0002:
             continue
 
         cand.center_score = max(0.0, 1.0 - cand.distance_to_center * 2)
