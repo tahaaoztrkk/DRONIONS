@@ -118,6 +118,7 @@ from utils.logger import log_event
 from utils.prompts import get_prompts
 
 from perception.detector import YOLOWorldDetector
+from perception.hybrid import HybridDetector
 from perception.filters import filter_candidates
 from perception.appearance import (colour_plausible, reference_signature,
                                    reference_signatures, colour_signature)
@@ -1558,7 +1559,12 @@ def main():
     node.start_setpoint_stream()
     threading.Thread(target=lambda: rclpy.spin(node), daemon=True).start()
 
-    detector = YOLOWorldDetector()
+    # Both detectors. The open one answers anything the user asks for; the
+    # trained one is consulted only for the objects it has been shown, where it
+    # is 97% against 47% at the viewpoints the sweep actually flies from. It is
+    # absent unless its weights are on disk, and the system then behaves exactly
+    # as it did before.
+    detector = HybridDetector()
     tracker = Tracker()
 
     current_phase = PHASE_SEARCH

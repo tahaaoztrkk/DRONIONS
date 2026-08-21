@@ -89,6 +89,10 @@ PAD = 0.05
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--only', help='sadece bu nesne')
+    ap.add_argument('--trained', default='models/room_detector.pt',
+                    help='kutulari bu modelden al; yoksa YOLO-World')
+    ap.add_argument('--standoff', type=float, default=None,
+                    help='sabit mesafe (m); varsayilan nesne basina tabloda')
     a = ap.parse_args()
 
     world = find_world()
@@ -106,6 +110,21 @@ def main() -> None:
     if fresh(node, g, world) is None:
         sys.exit("Kare yok -- kopru calisiyor mu?")
 
+    # Box the object with whichever detector can actually see it at the
+    # distance the colour gate runs at.
+    #
+    # The standoffs were a compromise while YOLO-World was the only option: it
+    # cannot find the phone at 1.4 m, so the references had to be taken closer
+    # than the gate is applied and the two never matched. Measured after the
+    # trained model arrived, the book's reference read hue 222 -- its blue cover
+    # from a metre -- while its crop at search range reads 12, the wooden table,
+    # and the gate rejected the book at every viewpoint. The trained model
+    # detects out there, so the compromise is no longer needed.
+    trained = None
+    if a.trained and os.path.exists(a.trained):
+        from ultralytics import YOLO
+        trained = YOLO(a.trained)
+        print(f"kutular egitilmis modelden: {a.trained}")
     det = YOLOWorldDetector()
     os.makedirs(OUT_DIR, exist_ok=True)
     focal = (1280 / 2.0) / math.tan(CAMERA_HFOV / 2.0)
@@ -125,13 +144,14 @@ def main() -> None:
         # than monotonic in range -- the book was found at 1.5 m and not at
         # 1.05 m from the same side -- so a single distance per angle throws
         # away angles for no reason.
+        base = a.standoff if a.standoff else standoff
         for bearing, lift in VIEW_ANGLES:
           got_this_angle = False
           for scale in TRY_SCALES:
             if got_this_angle:
                 break
             ang = math.radians(bearing)
-            dist = standoff * scale
+            dist = base * scale
             x, y = ox + dist * math.cos(ang), oy + dist * math.sin(ang)
             z = oz + lift
             yaw = math.atan2(oy - y, ox - x)
@@ -146,10 +166,27 @@ def main() -> None:
                 continue
             rng0 = math.dist(drone, (ox, oy, oz))
             px0 = width * focal / rng0
-            boxed = [c for c in filter_candidates(det.detect(img))
-                     if c.bbox[0] <= uv[0] <= c.bbox[2]
-                     and c.bbox[1] <= uv[1] <= c.bbox[3]
-                     and 0.4 <= (c.bbox[2] - c.bbox[0]) / px0 <= 2.5]
+            if trained is not None:
+                res = trained.predict(img, conf=0.25, verbose=False)[0]
+                names = trained.names
+                boxed = []
+                for xyxy, cls, cf in zip(res.boxes.xyxy.tolist(),
+                                         res.boxes.cls.tolist(),
+                                         res.boxes.conf.tolist()):
+                    if names[int(cls)] != name:
+                        continue
+                    if not (xyxy[0] <= uv[0] <= xyxy[2]
+                            and xyxy[1] <= uv[1] <= xyxy[3]):
+                        continue
+                    if not 0.4 <= (xyxy[2] - xyxy[0]) / px0 <= 2.5:
+                        continue
+                    boxed.append(type('B', (), {
+                        'bbox': tuple(xyxy), 'confidence': float(cf)})())
+            else:
+                boxed = [c for c in filter_candidates(det.detect(img))
+                         if c.bbox[0] <= uv[0] <= c.bbox[2]
+                         and c.bbox[1] <= uv[1] <= c.bbox[3]
+                         and 0.4 <= (c.bbox[2] - c.bbox[0]) / px0 <= 2.5]
             if boxed:
                 shots.append((img, drone, uv,
                               max(boxed, key=lambda c: c.confidence), bearing))
