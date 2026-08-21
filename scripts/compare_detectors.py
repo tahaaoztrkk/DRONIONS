@@ -93,6 +93,17 @@ def main() -> None:
     centres = {name: centre for name, centre, _ in OBJECTS}
 
     stats = {c: {"seen": 0, "world": 0, "trained": 0} for c in CLASSES}
+    # Confidences of the detections that were actually right, per model.
+    #
+    # A hybrid has to rank candidates from both, and the ranking is confidence
+    # alone. Two models' confidences are not the same quantity -- different
+    # training objectives, different calibration -- so merging them naively
+    # lets whichever scores higher win systematically, for no reason connected
+    # to being right. Collected here because it costs nothing on a run that is
+    # already putting both models on the same frames, and guessing at it would
+    # be the fourth time in this project that an unmeasured assumption decided
+    # something.
+    confs = {"world": [], "trained": []}
     frames = []
 
     for vx, vy, vz in VIEWS:
@@ -113,9 +124,11 @@ def main() -> None:
             stats[name]["seen"] += 1
 
             world_det.set_target(name)
-            if any(counts_as(c.bbox, uv, exp_px)
-                   for c in filter_candidates(world_det.detect(img))):
-                stats[name]["world"] += 1
+            for c in filter_candidates(world_det.detect(img)):
+                if counts_as(c.bbox, uv, exp_px):
+                    stats[name]["world"] += 1
+                    confs["world"].append(c.confidence)
+                    break
 
             if trained is not None:
                 res = trained.predict(img, conf=a.conf, verbose=False)[0]
@@ -124,6 +137,8 @@ def main() -> None:
                                   res.boxes.cls.tolist()):
                     if int(cls) == idx and counts_as(b, uv, exp_px):
                         stats[name]["trained"] += 1
+                        confs["trained"].append(
+                            res.boxes.conf[res.boxes.xyxy.tolist().index(b)].item())
                         break
             frames.append({"object": name, "view": f"{vx},{vy},{vz}",
                            "range_m": round(rng, 2),
@@ -148,6 +163,22 @@ def main() -> None:
         print(f"\n  YOLO-World %{tot_w / tot_seen * 100:.0f}"
               + (f", egitilmis %{tot_t / tot_seen * 100:.0f}"
                  if trained is not None else ""))
+
+    print("\nDogru tespitlerin guven dagilimi (hibrit siralamasi bunu bilmeli):")
+    for src in ("world", "trained"):
+        v = sorted(confs[src])
+        if not v:
+            print(f"  {src:8} veri yok")
+            continue
+        n = len(v)
+        print(f"  {src:8} n={n:3}  min {v[0]:.2f}  ortanca {v[n // 2]:.2f}  "
+              f"max {v[-1]:.2f}")
+    if confs["world"] and confs["trained"]:
+        mw = sorted(confs["world"])[len(confs["world"]) // 2]
+        mt = sorted(confs["trained"])[len(confs["trained"]) // 2]
+        print(f"  ortanca orani {mt / mw:.2f} -> "
+              + ("dogrudan birlestirilebilir" if 0.7 <= mt / mw <= 1.4
+                 else "normalize etmeden birlestirilemez"))
 
     os.makedirs('logs', exist_ok=True)
     with open(OUT_CSV, 'w', newline='') as fh:
