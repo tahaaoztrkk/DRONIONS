@@ -16,12 +16,21 @@ traced by hand and nothing depends on the detector under test, which is the
 point -- a dataset built from detections would inherit whatever the detector is
 already confused by.
 
-Read the limits before trusting what comes out. The boxes are axis-aligned
-world extents, so they are slightly loose, uniformly. Occlusion is not modelled:
-an object hidden behind furniture still gets a label, which teaches the model
-that a table edge is sometimes a mug. And a model trained here learns these
-meshes under this lighting; the numbers it produces are about this dataset and
-do not transfer to a real room.
+Labels come from the simulator's own segmentation camera, which is co-located
+with the colour camera and shares its intrinsics, so a mask pixel and an image
+pixel are the same pixel. That replaces projecting each object's 3D extent,
+which was the first approach and was wrong in two ways that compounded: an
+axis-aligned box is larger than the silhouette it encloses, more so seen
+obliquely, and it says nothing about what is hidden. Measured, those labels ran
+1.04 to 1.38 times too wide; a detector trained on them drew boxes that wide,
+which read as nearer than they were, and the drone announced arrival almost
+where it had started. A mask has neither error -- it is what the camera can
+actually see, and only that.
+
+One limit remains and is not fixable here: a model trained on Gazebo meshes
+under one lighting setup learns this dataset, not this task. Whatever recall it
+reaches says what a task-specific detector buys in simulation and nothing about
+a real room.
 
   scripts/make_dataset.py                    # room world + bridge up
   scripts/make_dataset.py --grid 5 --out data/room
@@ -33,6 +42,7 @@ import math
 import os
 import random
 import sys
+import time
 
 import cv2
 import rclpy
@@ -43,12 +53,11 @@ from navigation.spatial import CAMERA_HFOV, CAMERA_PITCH_DOWN
 from gz_pose import PoseReader, find_world
 from experiment_small_objects import (Grab, MODEL, CAM_OFFSET, fresh, place,
                                       settled_pose, world_control)
+from sensor_msgs.msg import Image as ImageMsg
 
-# class -> (centre x, y, z of the visible body, half-extents in world axes)
-#
-# Half-extents use the largest horizontal dimension on both axes, so the box
-# encloses the object at any yaw. Slightly loose, and loose in the same way for
-# every sample, which is what matters for a label.
+# class -> (centre, half-extents). The centres are still used to aim the camera
+# and to score things elsewhere; the half-extents no longer set the labels, but
+# other scripts import them, and the segmentation label ids follow this order.
 OBJECTS = [
     ("laptop", (3.05, 0.22, 1.112), (0.19, 0.19, 0.097)),
     ("book", (3.05, -0.22, 1.067), (0.105, 0.105, 0.026)),
@@ -64,6 +73,37 @@ AREA_Y = (-1.3, 1.3)
 ALTITUDES = (1.4, 1.8, 2.2)
 # Below this the object is a smudge and the label teaches noise.
 MIN_BOX_PX = 10
+# Fewer mask pixels than this is a sliver of something mostly hidden, and a box
+# drawn round it describes the gap between two pieces of furniture rather than
+# the object. The projected-box version could not tell the difference at all.
+MIN_MASK_PX = 40
+
+
+class MaskGrab:
+    """Latest segmentation mask, labels in the red channel."""
+
+    def __init__(self, node):
+        self.img = None
+        node.create_subscription(ImageMsg, '/camera/segmentation', self._cb, 1)
+
+    def _cb(self, m):
+        import numpy as _np
+        a = _np.frombuffer(m.data, dtype=_np.uint8).reshape(m.height, m.width, 3)
+        # Gazebo puts the semantic label in the red channel of labels_map.
+        self.img = a[:, :, 0].copy()
+
+
+def box_from_mask(mask, label):
+    """Tight pixel box of one label, or None if too little of it is visible."""
+    import numpy as _np
+    ys, xs = _np.where(mask == label)
+    if xs.size < MIN_MASK_PX:
+        return None
+    x0, x1 = float(xs.min()), float(xs.max() + 1)
+    y0, y1 = float(ys.min()), float(ys.max() + 1)
+    if x1 - x0 < MIN_BOX_PX or y1 - y0 < MIN_BOX_PX:
+        return None
+    return x0, y0, x1, y1
 
 
 def corners(centre, half):
@@ -130,9 +170,19 @@ def main() -> None:
     rclpy.init()
     node = rclpy.create_node('make_dataset')
     g = Grab(node)
+    mask_g = MaskGrab(node)
     world_control(world, 'pause: true')
     if fresh(node, g, world) is None:
         sys.exit("Kare yok -- kopru calisiyor mu?")
+    # The mask arrives on its own topic and must belong to the same step as the
+    # image, or every label describes a frame the drone is no longer looking at.
+    for _ in range(200):
+        rclpy.spin_once(node, timeout_sec=0.02)
+        if mask_g.img is not None:
+            break
+    if mask_g.img is None:
+        sys.exit("Segmentasyon maskesi gelmiyor -- /camera/segmentation "
+                 "kopruye bagli mi?")
 
     for split in ("train", "val"):
         os.makedirs(os.path.join(a.out, "images", split), exist_ok=True)
@@ -160,11 +210,34 @@ def main() -> None:
                     img = fresh(node, g, world)
                     if img is None:
                         continue
-                    drone = settled_pose(pose) or (jx, jy, jz)
+                    # Clear and re-render *after* the image, not before it.
+                    #
+                    # place() touches the drone down before lifting it to the
+                    # viewpoint, and every step of that publishes a mask. Those
+                    # sit in the queue, so clearing beforehand and then spinning
+                    # simply collected the first of them -- a mask taken from
+                    # the floor, where the table objects are not in view. The
+                    # symptom was a dataset with labels for the cardboard box on
+                    # the floor and nothing else, in a room with five objects.
+                    #
+                    # Physics is paused and the drone does not move between the
+                    # two, so a mask rendered a few steps later is a mask of the
+                    # same scene from the same place.
+                    mask_g.img = None
+                    world_control(world, 'pause: true, multi_step: 15')
+                    t0 = time.time()
+                    while mask_g.img is None and time.time() - t0 < 3.0:
+                        rclpy.spin_once(node, timeout_sec=0.02)
+                    if mask_g.img is None:
+                        continue
+                    mask = mask_g.img
                     h_img, w_img = img.shape[:2]
+                    if mask.shape[:2] != (h_img, w_img):
+                        continue
                     lines = []
                     for idx, (name, centre, half) in enumerate(OBJECTS):
-                        box = box_for(centre, half, drone, jyaw, w_img, h_img)
+                        # Label ids in the world start at 1; class ids at 0.
+                        box = box_from_mask(mask, idx + 1)
                         if not box:
                             continue
                         x0, y0, x1, y1 = box

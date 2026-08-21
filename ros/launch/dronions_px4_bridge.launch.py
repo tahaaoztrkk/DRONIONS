@@ -34,6 +34,14 @@ def _bridge(context, *args, **kwargs):
     # descended toward a target it had just spotted and flew into the top of
     # the wall it was still standing over.
     lidar_down = f'{base}/lidar_down_link/sensor/lidar_down/scan'
+    # Segmentation, for building training labels. Bridged alongside rather than
+    # in a separate launch because a mask taken from a different run is a mask
+    # of a different frame, and the whole value of it is that mask pixel and
+    # image pixel are the same pixel. Flight never subscribes, so the cost is
+    # one idle bridge.
+    # Flat, not the long sensor path the others use: the sensor declares
+    # <topic>segmentation</topic>, and that is absolute.
+    seg = '/segmentation/labels_map'
 
     return [Node(
         package='ros_gz_bridge',
@@ -43,11 +51,13 @@ def _bridge(context, *args, **kwargs):
             f'{cam_info}@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo',
             f'{lidar}@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
             f'{lidar_down}@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
+            f'{seg}@sensor_msgs/msg/Image@gz.msgs.Image',
             '--ros-args',
             '-r', f'{cam}:=/camera/image_raw',
             '-r', f'{cam_info}:=/camera/camera_info',
             '-r', f'{lidar}:=/scan',
             '-r', f'{lidar_down}:=/scan_down',
+            '-r', f'{seg}:=/camera/segmentation',
         ],
         output='screen',
     )]

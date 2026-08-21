@@ -261,6 +261,10 @@
 
     <include>
       <name>laptop</name>
+      <plugin filename="gz-sim-label-system"
+              name="gz::sim::systems::Label">
+        <label>1</label>
+      </plugin>
       <static>true</static>
       <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Travel_Mate_P_series_Notebook</uri>
       <pose>3.05 0.22 1.015 0 0 2.6</pose>
@@ -268,6 +272,10 @@
 
     <include>
       <name>book</name>
+      <plugin filename="gz-sim-label-system"
+              name="gz::sim::systems::Label">
+        <label>2</label>
+      </plugin>
       <static>true</static>
       <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Eat_to_Live_The_Amazing_NutrientRich_Program_for_Fast_and_Sustained_Weight_Loss_Revised_Edition_Book</uri>
       <pose>3.05 -0.22 1.041 1.5708 0 0.4</pose>
@@ -275,6 +283,10 @@
 
     <include>
       <name>mug</name>
+      <plugin filename="gz-sim-label-system"
+              name="gz::sim::systems::Label">
+        <label>3</label>
+      </plugin>
       <static>true</static>
       <uri>https://fuel.gazebosim.org/1.0/GoogleResearch/models/Cole_Hardware_Mug_Classic_Blue</uri>
       <pose>2.62 0.24 1.015 0 0 1.2</pose>
@@ -282,6 +294,10 @@
 
     <include>
       <name>phone</name>
+      <plugin filename="gz-sim-label-system"
+              name="gz::sim::systems::Label">
+        <label>4</label>
+      </plugin>
       <static>true</static>
       <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Samsung J8 Black</uri>
       <pose>2.62 -0.16 1.019 1.5708 0 0.9</pose>
@@ -308,6 +324,10 @@
          object whose detection behaviour is already characterised. -->
     <include>
       <name>floor_box</name>
+      <plugin filename="gz-sim-label-system"
+              name="gz::sim::systems::Label">
+        <label>5</label>
+      </plugin>
       <static>true</static>
       <uri>/opt/ros/jazzy/share/ros_gz_sim_demos/models/cardboard_box</uri>
       <pose>0.10 1.10 0.15 0 0 0.6</pose>
