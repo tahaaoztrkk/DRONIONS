@@ -22,3 +22,9 @@ venv/
 weights/
 
 .env
+
+# Auto-generated detection dataset and training runs. Both are reproducible
+# from scripts/make_dataset.py and scripts/train_detector.py, and the images
+# alone are 30 MB of one room seen from 864 angles.
+data/room/
+runs/
