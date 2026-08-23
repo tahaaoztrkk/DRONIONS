@@ -13,10 +13,13 @@ Replacing the open model would cost the thing the system is for. A user saying
 model stays and answers everything, and the trained one is consulted only for
 the objects it has actually been shown. What comes out is the union.
 
-The confidences are comparable enough to share one ranking, which was measured
-rather than assumed: across correct detections the open model sits at a median
-of 0.74 and the trained one at 0.87, a ratio of 1.18. Had they been far apart,
-one would have won every ranking for reasons unconnected to being right.
+The two confidences are not the same quantity and are rescaled before they
+share a ranking. Measured across correct detections, the open model sits at a
+median of 0.64 and the trained one at 0.37 -- the trained model is less certain
+because tight boxes on small objects are a harder thing to be certain about, not
+because it is more often wrong: it is right 100% of the time against 53%. Left
+raw, the open model would win every ranking for a reason unconnected to being
+right, which is exactly the failure that had the drone chasing a book.
 
 Worth knowing about the trained half. It learned one room of Gazebo meshes under
 one light, so outside that room it is confident and unreliable, and it is
@@ -51,8 +54,14 @@ from perception.detector import YOLOWorldDetector
 # overlapping nothing it recognises are left alone, because they may be objects
 # it was never shown.
 OVERLAP_SAME_THING = 0.55
-DEFAULT_WEIGHTS = os.getenv("DRONIONS_TRAINED_WEIGHTS", "models/room_detector.pt")
-TRAINED_CONF = float(os.getenv("DRONIONS_TRAINED_CONF", "0.25"))
+DEFAULT_WEIGHTS = os.getenv("DRONIONS_TRAINED_WEIGHTS",
+                            "models/room_detector_seg.pt")
+TRAINED_CONF = float(os.getenv("DRONIONS_TRAINED_CONF", "0.15"))
+# Medians of the two models' confidences on detections that were correct,
+# measured on the same frames. Used only to put them on one scale for ranking;
+# the numbers a gate or the model sees are untouched.
+WORLD_CONF_MEDIAN = 0.64
+TRAINED_CONF_MEDIAN = 0.37
 
 
 def _overlap(a, b) -> float:
@@ -86,6 +95,20 @@ def _iou(a, b) -> float:
     area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
     union = area_a + area_b - inter
     return inter / union if union > 0 else 0.0
+
+
+def _rank_score(cand) -> float:
+    """Confidence on a common scale, for ordering candidates from both models.
+
+    Divided by each model's own median so that "typical for this model" ranks
+    the same either way. It is deliberately crude -- a ratio of medians, not a
+    calibration -- and it exists only to stop one model outranking the other by
+    default. Nothing downstream sees this number.
+    """
+    conf = getattr(cand, "confidence", 0.0)
+    if getattr(cand, "source", "") == "trained":
+        return conf / TRAINED_CONF_MEDIAN
+    return conf / WORLD_CONF_MEDIAN
 
 
 class HybridDetector:
@@ -170,7 +193,7 @@ class HybridDetector:
             # a phone -- which is the failure this exists to remove.
             if not any(t.label == self.target for t in overlapping):
                 self.suppressed += 1
-        merged.sort(key=lambda c: c.confidence, reverse=True)
+        merged.sort(key=_rank_score, reverse=True)
         return merged
 
     def _trained_candidates(self, frame, all_classes: bool = False
