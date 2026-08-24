@@ -710,6 +710,45 @@ def close_on_point_twist(node, xy, current_z: float, target_z=None) -> Twist:
     return t
 
 
+# Constant offset between PX4's yaw estimate and the vehicle's true heading.
+#
+# Measured with scripts/measure_heading_bias.py: MAVROS reports a yaw about
+# 4.2 degrees away from the simulator's truth while its *position* agrees to
+# within five centimetres. That pairing is the damaging one -- the ray leaves
+# the right point in the wrong direction, so the error is lateral and grows
+# with range: 0.22 m at three metres.
+#
+# It is why the book kept landing 0.36-0.41 m off in y across two flights, and
+# the laptop 0.26 m, always the same sign. It never stopped the drone arriving,
+# because the drone navigates in the same biased frame it estimates in; what it
+# corrupts is the position the user is told, which is expressed in the world
+# frame they stand in.
+#
+# Not constant enough to hard-code. Over three seconds it holds to 0.05
+# degrees, but between measurements minutes apart it moved 0.2, and a fresh
+# EKF alignment on the next start need not land in the same place. So the
+# default is no correction at all, and applying one is a deliberate act with a
+# measurement behind it:
+#
+#   export DRONIONS_HEADING_BIAS_DEG=$(...)   # scripts/measure_heading_bias.py
+#
+# On real hardware this is what magnetometer calibration addresses. A drone
+# with a badly calibrated compass shows exactly this signature.
+HEADING_BIAS_DEG = float(os.getenv("DRONIONS_HEADING_BIAS_DEG", "0.0"))
+HEADING_BIAS_RAD = math.radians(HEADING_BIAS_DEG)
+
+
+def _yaw_rotate(quat, angle: float):
+    """Rotate an (x, y, z, w) quaternion by `angle` about the world z axis."""
+    x, y, z, w = quat
+    s, c = math.sin(angle / 2.0), math.cos(angle / 2.0)
+    # (0, 0, s, c) composed on the left: world-frame yaw, not body-frame.
+    return (c * x - s * y,
+            c * y + s * x,
+            c * z + s * w,
+            c * w - s * z)
+
+
 def hold_altitude_twist(current_z: float) -> Twist:
     """Zero horizontal motion, altitude-hold on Z. Used whenever the loop
     has nothing else to command (no frame yet, no target set) -- a bare
@@ -1193,7 +1232,17 @@ class DronionsRosNodePX4(Node):
         return (self._x, self._y, self._z)
 
     def orientation(self):
-        return self._quat
+        """Attitude to cast camera rays with, corrected for heading bias.
+
+        See HEADING_BIAS_DEG. The vehicle's own yaw estimate is not its yaw,
+        and the correction belongs here rather than in the camera model:
+        it is a property of this vehicle's heading estimate, and the same
+        camera geometry is used offline with the simulator's true attitude,
+        which does not have it.
+        """
+        if not HEADING_BIAS_RAD or self._quat is None:
+            return self._quat
+        return _yaw_rotate(self._quat, -HEADING_BIAS_RAD)
 
     def _on_global(self, msg: NavSatFix):
         # MAVROS only publishes this once PX4 has a global position estimate,
