@@ -2328,7 +2328,10 @@ def main():
                                       max(0, int(c.bbox[0])):int(c.bbox[2])])
                             dx, dy, _ = node.pose_xyz()
                             log_event(
-                                f"ANKET r={rank} conf={c.confidence:.3f} "
+                                f"ANKET r={rank} "
+                                f"etiket={c.label} "
+                                f"kaynak={getattr(c, 'source', 'world')} "
+                                f"conf={c.confidence:.3f} "
                                 f"alan={c.relative_area:.4f} "
                                 f"genislik={f'{iw:.2f}' if iw else 'yok'} "
                                 f"ton={f'{csig[0]:.0f}' if csig else 'yok'} "
