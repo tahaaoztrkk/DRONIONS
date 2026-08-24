@@ -52,6 +52,7 @@ import threading
 import queue
 from collections import deque
 import time
+import difflib
 import glob
 import math
 import random
@@ -115,7 +116,7 @@ from assistant.dialogue import Dialogue
 from assistant.speech import speak
 from assistant.listen import get_voice_input
 from utils.logger import log_event
-from utils.prompts import get_prompts
+from utils.prompts import get_prompts, PROMPT_DATABASE, _canonical
 
 from perception.detector import YOLOWorldDetector
 from perception.hybrid import HybridDetector
@@ -594,6 +595,25 @@ def ref_paths_for(target):
                 if os.path.exists(path) and path not in out:
                     out.append(path)
     return out
+
+
+def nearest_known(target):
+    """Closest name the system actually knows, or None if nothing is close.
+
+    Everything downstream is keyed on these names, so a word that misses them
+    misses all of it at once. Offering the nearest one turns a silent
+    degradation into a question the user can answer.
+    """
+    if not target:
+        return None
+    known = set(PROMPT_DATABASE)
+    for names in PROMPT_DATABASE.values():
+        known.update(n.lower() for n in names)
+    hits = difflib.get_close_matches(target.lower().strip(), sorted(known),
+                                     n=1, cutoff=0.72)
+    if not hits:
+        return None
+    return _canonical(hits[0]) or hits[0]
 
 
 def other_refs_for(target):
@@ -1694,6 +1714,26 @@ def main():
                     if len(prompts) == 1:
                         log_event(f"Uyari: '{target}' icin prompt genislemesi yok "
                                   f"-- tek ifadeyle araniyor, tespit zayif olabilir.")
+                        # And say so, rather than only writing it down.
+                        #
+                        # A single mistyped letter switches off three things at
+                        # once: the prompt expansion, the colour gate for want
+                        # of a reference photo, and the trained detector, whose
+                        # classes it no longer matches. Measured -- "bbook" ran
+                        # on one weak prompt with every gate disabled and flew
+                        # to the laptop. All of it was in the log and none of it
+                        # was audible, which for a user who cannot see the
+                        # screen is the same as not happening.
+                        near = nearest_known(target)
+                        if near:
+                            dialogue.say(
+                                f"{target} diye bir şey tanımıyorum. "
+                                f"{near} mı demek istediniz? Yine de aramayı "
+                                f"deniyorum ama emin olamam.")
+                        else:
+                            dialogue.say(
+                                f"{target} tanımadığım bir nesne. Aramayı "
+                                f"deniyorum ama karşılaştıracak bir örneğim yok.")
                     else:
                         log_event(f"'{target}' icin {len(prompts)} prompt: "
                                   f"{', '.join(prompts)}")
