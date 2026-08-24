@@ -19,6 +19,18 @@ measurements read the attitude from Gazebo, because the flight stack was not
 running, so they measured the camera and the geometry with a heading that was
 correct. The flight does not have that.
 
+It is not one number. Within a few seconds it holds to a hundredth of a degree,
+but across five starts it read -4.16, -4.18, -4.99, -6.13 and -5.98, because
+each is a fresh EKF alignment. Within one flight it also settles: measured just
+before takeoff at -5.98, and -3.90 eight minutes later, drifting only 0.12
+degrees over the two minutes after that. So the shift happens around takeoff
+and then slows.
+
+That decides when to measure, and the answer is: immediately before the flight.
+The target is localised about a minute after takeoff, and a value taken 70
+seconds before that carried the book estimate from 0.44 m of error to 0.085 m.
+The same value read eight minutes later would have been two degrees wrong.
+
 On real hardware this is what magnetometer calibration and declination are
 about, and a real drone with a badly calibrated compass shows the same
 signature. The number is therefore not a simulator artifact to be deleted but a
@@ -60,6 +72,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('-n', '--samples', type=int, default=20)
     ap.add_argument('--interval', type=float, default=0.5)
+    ap.add_argument('-q', '--quiet', action='store_true',
+                    help='sadece ortanca dereceyi yaz -- betikten kullanmak icin')
     a = ap.parse_args()
 
     world = find_world()
@@ -92,9 +106,10 @@ def main() -> int:
     if 'q' not in latest:
         sys.exit("MAVROS pozu gelmedi -- ucus yigini calisiyor mu?")
 
-    print(f"\n{'':6} {'MAVROS':>10} {'gercek':>10} {'fark':>9} "
-          f"{'konum farki':>13}")
-    print('-' * 52)
+    if not a.quiet:
+        print(f"\n{'':6} {'MAVROS':>10} {'gercek':>10} {'fark':>9} "
+              f"{'konum farki':>13}")
+        print('-' * 52)
     diffs, offsets = [], []
     for i in range(a.samples):
         spun = time.time()
@@ -108,7 +123,8 @@ def main() -> int:
         off = math.dist(latest['p'][:2], gp[:2])
         diffs.append(d)
         offsets.append(off)
-        print(f"{i:5}. {m_yaw:9.2f}° {g_yaw:9.2f}° {d:8.2f}° {off:12.3f} m")
+        if not a.quiet:
+            print(f"{i:5}. {m_yaw:9.2f}° {g_yaw:9.2f}° {d:8.2f}° {off:12.3f} m")
         time.sleep(a.interval)
 
     if not diffs:
@@ -116,6 +132,14 @@ def main() -> int:
     diffs.sort()
     n = len(diffs)
     med = diffs[n // 2]
+    if a.quiet:
+        # One number on stdout and nothing else, so a caller can do
+        # DRONIONS_HEADING_BIAS_DEG=$(... -q). A spread this tight is what
+        # makes that safe; if it ever widens, the full output says so.
+        print(f"{med:.2f}")
+        truth.stop()
+        rclpy.shutdown()
+        return 0
     print('-' * 52)
     print(f"n={n}  ortanca {med:+.2f}°  aralik {diffs[0]:+.2f}° .. "
           f"{diffs[-1]:+.2f}°  (yayilim {diffs[-1] - diffs[0]:.2f}°)")

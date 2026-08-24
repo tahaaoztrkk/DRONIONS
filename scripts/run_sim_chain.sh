@@ -10,6 +10,7 @@
 # why this is one script plus one prompt rather than four terminals.
 #
 #   INTERACTIVE=1 HEADLESS=0 scripts/run_sim_chain.sh   # talk to the drone
+#   HEADING_BIAS=0 scripts/run_sim_chain.sh   # aracin yon hatasini duzeltme
 #   scripts/run_sim_chain.sh                 # headless, target "box"
 #   HEADLESS=0 scripts/run_sim_chain.sh      # with the Gazebo GUI
 #   DRONIONS_TARGET=cup scripts/run_sim_chain.sh
@@ -119,6 +120,36 @@ until grep -q "Got HEARTBEAT, connected" "$LOGDIR/mavros.log" 2>/dev/null; do sl
 echo "[chain] MAVROS connected $(date +%T)"
 
 source venv/bin/activate
+
+# The vehicle's yaw estimate is not its yaw, and the node casts camera rays
+# with it. Measured here rather than assumed: MAVROS sits about 4-5 degrees off
+# the simulator's truth while its position agrees to a few centimetres, so the
+# ray leaves the right point in the wrong direction and the error is lateral
+# and grows with range -- 0.22 m at three metres, which was most of a book
+# estimate that landed 0.41 m out in y across two flights.
+#
+# Measured per run because it is not stable between them: 0.01 degrees of
+# spread within a run, but -4.16, -4.18 and -4.99 on three consecutive starts,
+# because each is a fresh EKF alignment.
+#
+# This reads ground truth, which a real drone does not have, so it is an
+# experimental control and not part of the system: it removes the vehicle's
+# heading error so the perception pipeline can be measured on its own. The
+# honest pair of numbers is the pipeline's own accuracy and the accuracy with
+# the vehicle's heading included; on real hardware the gap between them is
+# what magnetometer calibration closes. HEADING_BIAS=0 leaves it uncorrected.
+if [ "${HEADING_BIAS:-auto}" = "auto" ]; then
+    MEASURED=$(timeout 60 python3 scripts/measure_heading_bias.py -q -n 10 \
+                   --interval 0.15 2>/dev/null | tail -1)
+    case "$MEASURED" in
+        -[0-9]*|[0-9]*) HEADING_BIAS="$MEASURED" ;;
+        *)  echo "[chain] sapma onyargisi olculemedi -- duzeltmesiz devam"
+            HEADING_BIAS=0 ;;
+    esac
+fi
+export DRONIONS_HEADING_BIAS_DEG="$HEADING_BIAS"
+echo "[chain] sapma onyargisi: ${HEADING_BIAS} derece $(date +%T)"
+
 if [ "$INTERACTIVE" = "1" ]; then
     echo "[chain] node in foreground $(date +%T) -- type commands below."
     echo "[chain]   dunya: $WORLD"
