@@ -2098,30 +2098,49 @@ def main():
                     if target and time.time() > surface_scan_after:
                         surface_scan_after = time.time() + SURFACE_SCAN_INTERVAL
                         detector.set_target_classes(list(SURFACE_TOPS))
-                        for c in filter_candidates(detector.detect(frame)):
-                            top = SURFACE_TOPS.get(c.label.lower())
-                            if top is None:
-                                continue
-                            where = locate_target(c, node.pose_xyz(),
-                                                  node.orientation(), plane_z=0.0)
-                            if not where:
-                                continue
-                            # Inside the searched area or not at all. Furniture
-                        # is localized by the same ray projection as anything
-                        # else, and a shallow ray on a large object lands a
-                        # long way out -- one run catalogued a "desk" at
-                        # (1.2, -0.3) where there is open floor, and flying to
-                        # a surface that is not there is how the drone ended up
-                        # outside the room.
-                        if not (SEARCH_AREA_X[0] <= where[0] <= SEARCH_AREA_X[1]
-                                and SEARCH_AREA_Y[0] <= where[1] <= SEARCH_AREA_Y[1]):
-                            continue
-                        if surfaces.note(c.label.lower(), (where[0], where[1]), top):
-                                log_event(f"Yuzey bulundu: {c.label} "
-                                          f"({where[0]:.1f}, {where[1]:.1f}), "
-                                          f"tahmini ust {top:.2f} m. "
-                                          f"Bilinen yuzeyler: {surfaces.summary()}")
-                        detector.set_target(target)
+                        try:
+                            for c in filter_candidates(detector.detect(frame)):
+                                top = SURFACE_TOPS.get(c.label.lower())
+                                if top is None:
+                                    continue
+                                where = locate_target(c, node.pose_xyz(),
+                                                      node.orientation(),
+                                                      plane_z=0.0)
+                                if not where:
+                                    continue
+                                # Inside the searched area or not at all.
+                                # Furniture is localized by the same ray
+                                # projection as anything else, and a shallow ray
+                                # on a large object lands a long way out -- one
+                                # run catalogued a "desk" at (1.2, -0.3) where
+                                # there is open floor, and flying to a surface
+                                # that is not there is how the drone ended up
+                                # outside the room.
+                                if not (SEARCH_AREA_X[0] <= where[0] <= SEARCH_AREA_X[1]
+                                        and SEARCH_AREA_Y[0] <= where[1] <= SEARCH_AREA_Y[1]):
+                                    continue
+                                if surfaces.note(c.label.lower(),
+                                                 (where[0], where[1]), top):
+                                    log_event(f"Yuzey bulundu: {c.label} "
+                                              f"({where[0]:.1f}, {where[1]:.1f}), "
+                                              f"tahmini ust {top:.2f} m. "
+                                              f"Bilinen yuzeyler: {surfaces.summary()}")
+                        finally:
+                            # The prompts must go back to the target on every
+                            # path out of here, which is why this is a finally
+                            # and not a line at the end.
+                            #
+                            # It used to be that line, and the area check above
+                            # sat outside the loop through a mis-indentation, so
+                            # its `continue` skipped the rest of the main loop
+                            # and left the detector prompting for furniture. It
+                            # then boxed the table -- confidence 0.905, 9.5% of
+                            # the frame -- the model approved the crop, quite
+                            # correctly describing the laptop standing on it,
+                            # and a box that size put a target three metres away
+                            # at 0.7 m, which is inside the arrival radius. The
+                            # drone announced it had arrived without moving.
+                            detector.set_target(target)
 
                     # Long enough on the cheap sweep. If the target has not turned
                     # up and there is somewhere it could plausibly be sitting, go
@@ -2581,6 +2600,21 @@ def main():
                         dx, dy, _ = node.pose_xyz()
                         log_event(f"Hedef konumu (dunya) x={target_xyz[0]:.2f} "
                                   f"y={target_xyz[1]:.2f} | drone x={dx:.2f} y={dy:.2f}")
+                        # Which box this estimate came out of, in enough detail
+                        # to reproduce it offline. Two flights in a row put the
+                        # target a metre away while standing three metres from
+                        # it, and both times the log recorded the estimate and
+                        # nothing about its input, so the cause had to be
+                        # guessed at from an area fraction. A world position is
+                        # a box, a pose and a model; the log now has all three.
+                        log_event(
+                            f"  ^ kaynak={getattr(nearest, 'source', 'world')} "
+                            f"etiket={nearest.label} guven={nearest.confidence:.3f} "
+                            f"kutu={nearest.bbox} {nearest.width}x{nearest.height}px "
+                            f"merkez={nearest.normalized_center[0]:.3f},"
+                            f"{nearest.normalized_center[1]:.3f} "
+                            f"poz={tuple(round(v, 2) for v in node.pose_xyz())} "
+                            f"yon={tuple(round(v, 3) for v in node.orientation())}")
                         last_report = describe_target(
                             target_xyz, USER_POSITION, USER_YAW,
                             label=f"{target.capitalize()}", context=found_context)
