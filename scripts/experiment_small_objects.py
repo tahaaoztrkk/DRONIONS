@@ -152,6 +152,20 @@ def teleport(world, name, x, y, z, yaw=0.0):
         capture_output=True)
 
 
+# Where to touch down to zero the velocity: clear floor, not under the
+# viewpoint.
+#
+# Grounding beneath the viewpoint puts the airframe inside the furniture
+# whenever the viewpoint is over it, and the contact solver throws it out
+# sideways rather than stopping it. Measured with the room world: asking for
+# (2.0, 0.0, 1.4) delivered (1.54, 0.25, 1.18), half a metre away and moving
+# fast enough to travel another 0.46 m during the fifteen steps a capture takes.
+# The geometry stays self-consistent, because the pose is read rather than
+# assumed, but the viewpoints sampled are not the ones asked for and the
+# airframe arrives at them tilted.
+GROUND_SPOT = (0.0, -1.0)
+
+
 def place(world, name, x, y, z, yaw, ground_z=0.12, settle=60):
     """Put the drone at a viewpoint with its velocity actually zero.
 
@@ -163,9 +177,37 @@ def place(world, name, x, y, z, yaw, ground_z=0.12, settle=60):
     contact zero the velocity, after which every viewpoint holds to within half
     a centimetre of the last.
     """
-    teleport(world, name, x, y, ground_z, yaw)
+    teleport(world, name, GROUND_SPOT[0], GROUND_SPOT[1], ground_z, yaw)
     world_control(world, f'pause: true, multi_step: {settle}')
     teleport(world, name, x, y, z, yaw)
+
+
+def placed_ok(actual, want, quat=None, tol=0.06, max_tilt_deg=15.0):
+    """Did the drone actually reach the viewpoint, level?
+
+    A viewpoint that intersects the furniture cannot be occupied, and the
+    contact solver answers by throwing the airframe somewhere else -- measured
+    in the room, asking for (2.4, -0.1, 1.15), which is 0.14 m above a 1.015 m
+    table, delivered (2.05, -0.13, 1.52) upside down at -143 degrees of roll.
+
+    Nothing downstream notices. The pose is read rather than assumed, so the
+    geometry stays self-consistent and the sample looks like any other; it is
+    simply a measurement of a different, tilted, viewpoint. Sweeps that include
+    a few of these grow a tail of outliers that reads as a localisation
+    problem, which is what four estimates over half a metre in one sweep turned
+    out to be. Callers should skip a sample this rejects rather than trust it.
+    """
+    if actual is None:
+        return False
+    if math.dist(actual, want) > tol:
+        return False
+    if quat is None:
+        return True
+    x, y, z, w = quat
+    roll = math.degrees(math.atan2(2.0 * (w * x + y * z),
+                                   1.0 - 2.0 * (x * x + y * y)))
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x)))))
+    return abs(roll) <= max_tilt_deg and abs(pitch) <= max_tilt_deg
 
 
 def settled_pose(pose, delay=0.35):
