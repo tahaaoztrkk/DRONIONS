@@ -3018,8 +3018,21 @@ def main():
 
                     if arrived and not announced_arrival:
                         announced_arrival = True
-                        log_event(f"HEDEFE VARILDI: {target} "
-                                  f"({node.current_altitude():.1f}m)")
+                        # Altitude *and* the horizontal distance left to
+                        # the target. The altitude alone was all this line
+                        # carried, and reading "(2.0m)" as "two metres away"
+                        # rather than "never descended" cost two rounds of
+                        # diagnosis. The number a person wants here is how far
+                        # the drone stopped from the thing it was sent to.
+                        _ax, _ay, _ = node.pose_xyz()
+                        _left = (math.hypot(last_seen_xy[0] - _ax,
+                                            last_seen_xy[1] - _ay)
+                                 if last_seen_xy else None)
+                        log_event(
+                            f"HEDEFE VARILDI: {target} "
+                            f"irtifa {node.current_altitude():.2f}m"
+                            + (f", hedefe {_left:.2f}m" if _left is not None
+                               else ", hedef konumu yok"))
                         print(f"\n[✓] Hedefe varıldı: {target}")
                         speak(f"{target} hedefine varıldı.")
                         # Done means done. Continuing to chase something the
