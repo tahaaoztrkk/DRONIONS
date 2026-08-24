@@ -37,6 +37,7 @@ sys.path.insert(0, '/home/taha/DRONIONS')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from navigation.spatial import CAMERA_HFOV
 from perception.appearance import reference_signature
+from perception.hybrid import DEFAULT_WEIGHTS
 from perception.detector import YOLOWorldDetector
 from perception.filters import filter_candidates
 from gz_pose import PoseReader, find_world
@@ -89,7 +90,12 @@ PAD = 0.05
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--only', help='sadece bu nesne')
-    ap.add_argument('--trained', default='models/room_detector.pt',
+    # The same weights the search actually flies with, taken from hybrid.py
+    # rather than spelled again here. They had already drifted apart once: the
+    # references were built from room_detector.pt while the search ran
+    # room_detector_seg.pt, so the crops the colour gate compared against came
+    # from a model with measurably wider boxes than the one producing the crops.
+    ap.add_argument('--trained', default=DEFAULT_WEIGHTS,
                     help='kutulari bu modelden al; yoksa YOLO-World')
     ap.add_argument('--standoff', type=float, default=None,
                     help='sabit mesafe (m); varsayilan nesne basina tabloda')
