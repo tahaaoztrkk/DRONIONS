@@ -65,6 +65,9 @@ from typing import Optional, Tuple
 CAMERA_MODEL_SDF = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'px4', 'models', 'dronions_cam', 'model.sdf')
+AIRFRAME_SDF = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'px4', 'models', 'x500_dronions', 'model.sdf')
 
 
 def _camera_hfov(default: float = 1.74) -> float:
@@ -82,9 +85,49 @@ def _camera_hfov(default: float = 1.74) -> float:
     return default
 
 
+def _camera_mount(default=(0.12, 0.03, 0.242)):
+    """Where the camera sits on the airframe, in body axes (forward, left, up).
+
+    Read from the joint that fixes the camera to base_link, for the same reason
+    the field of view is: it is written in the model file, and a second copy
+    here would be a number that can silently disagree with the simulator.
+    """
+    env = os.getenv('DRONIONS_CAMERA_MOUNT')
+    if env:
+        parts = [float(v) for v in env.replace(',', ' ').split()]
+        if len(parts) == 3:
+            return tuple(parts)
+    try:
+        with open(AIRFRAME_SDF) as fh:
+            m = re.search(r'<joint name="CameraJoint".*?<pose[^>]*>\s*'
+                          r'([-0-9.eE]+)\s+([-0-9.eE]+)\s+([-0-9.eE]+)',
+                          fh.read(), re.S)
+        if m:
+            return tuple(float(m.group(i)) for i in (1, 2, 3))
+    except OSError:
+        pass
+    return default
+
+
 CAMERA_HFOV = _camera_hfov()
 CAMERA_PITCH_DOWN = 0.35
 CAMERA_ASPECT = 4.0 / 3.0
+# The camera is not at the drone's pose origin, and every projection in this
+# file used to assume it was.
+#
+# It is mounted 0.12 m forward and 0.242 m above base_link, and a ray cast from
+# the origin instead of from the lens points somewhere else -- measured against
+# ground truth over 24 detections, a median of 15 degrees off, and 43 degrees at
+# 0.45 m, because the error is a lever arm and grows as the object gets closer.
+# Casting from the lens brings the same 24 down to a median of 2.9 degrees, the
+# remainder being that a box centre is not an object centre.
+#
+# This is what made plane projection look untrustworthy. The plane answer came
+# out 0.61-0.81 times the true range across every viewpoint measured, which was
+# read as the geometry being ill-conditioned and led to RANGE_TRUST_RATIO
+# overriding it with apparent size. The geometry was fine; it was being cast
+# from the wrong point.
+CAMERA_MOUNT = _camera_mount()
 
 # No pitch calibration is applied, and that is a measured decision rather than
 # an omission.
@@ -119,6 +162,16 @@ def _quat_rotate(q, v):
     return (vx + w * tx + (y * tz - z * ty),
             vy + w * ty + (z * tx - x * tz),
             vz + w * tz + (x * ty - y * tx))
+
+
+def camera_origin_world(drone_xyz, quat):
+    """Where the lens actually is, given the airframe's pose.
+
+    Callers hold the drone's pose, which is base_link. See CAMERA_MOUNT for
+    what casting rays from there instead of from here costs.
+    """
+    off = _quat_rotate(quat, CAMERA_MOUNT)
+    return (drone_xyz[0] + off[0], drone_xyz[1] + off[1], drone_xyz[2] + off[2])
 
 
 def camera_ray_world(u_norm: float, v_norm: float, quat,
@@ -345,8 +398,9 @@ def implied_width(candidate, drone_xyz, drone_quat,
     target, so this costs nothing extra and is available before any model is
     called.
     """
+    eye = camera_origin_world(drone_xyz, drone_quat)
     hit = project_to_plane(
-        drone_xyz,
+        eye,
         camera_ray_world(candidate.normalized_center[0],
                          candidate.bbox[3] / candidate.image_height
                          if getattr(candidate, "image_height", 0)
@@ -355,7 +409,7 @@ def implied_width(candidate, drone_xyz, drone_quat,
         plane_z)
     if hit is None or not getattr(candidate, "image_width", 0):
         return None
-    rng = math.dist(hit, drone_xyz)
+    rng = math.dist(hit, eye)
     frac = (candidate.bbox[2] - candidate.bbox[0]) / candidate.image_width
     return frac * 2.0 * rng * math.tan(CAMERA_HFOV / 2.0)
 
@@ -470,6 +524,10 @@ def locate_target(candidate, drone_xyz, drone_quat, plane_z: Optional[float] = N
     if use_bottom and getattr(candidate, "image_height", 0):
         v = candidate.bbox[3] / candidate.image_height
     ray = camera_ray_world(u, v, drone_quat)
+    # Everything below casts from the lens, not from base_link. See
+    # CAMERA_MOUNT: the two are 0.27 m apart, which at arm's length is a
+    # 40-degree error in where the ray points.
+    drone_xyz = camera_origin_world(drone_xyz, drone_quat)
 
     if plane_z is not None:
         return project_to_plane(drone_xyz, ray, plane_z)

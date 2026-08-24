@@ -27,9 +27,11 @@ from typing import Optional, Tuple
 DEFAULT_PREFIX = "x500_dronions"
 
 _NAME = re.compile(r'name:\s*"([^"]+)"')
-_X = re.compile(r'^\s*x:\s*(-?[\d.eE+-]+)')
-_Y = re.compile(r'^\s*y:\s*(-?[\d.eE+-]+)')
-_Z = re.compile(r'^\s*z:\s*(-?[\d.eE+-]+)')
+_FIELD = re.compile(r'^\s*([xyzw]):\s*(-?[\d.eE+-]+)')
+_BLOCK = re.compile(r'^\s*(position|orientation)\s*\{')
+# Gazebo prints protobuf text format, which omits any field at its default, so
+# an identity rotation arrives as a bare "w: 1" and a drone at the origin as an
+# empty "position {}". Missing means zero, never "not received".
 
 
 def find_world() -> Optional[str]:
@@ -49,8 +51,8 @@ def find_world() -> Optional[str]:
 class PoseReader:
     """Latest true pose of the model, kept current by a background reader.
 
-    `latest()` returns (x, y, z) or None. None means the stream has not
-    produced a matching pose yet -- callers should treat that as "no ground
+    `latest()` returns (x, y, z) and `latest_quat()` (x, y, z, w), or None.
+    None means the stream has not produced a matching pose yet -- callers should treat that as "no ground
     truth available" rather than substituting a guess, which is the mistake
     this module exists to stop.
     """
@@ -59,6 +61,7 @@ class PoseReader:
         self.prefix = prefix
         self.world = world or find_world()
         self._pos = None
+        self._quat = None
         self._names = set()
         self._stop = threading.Event()
         self._proc = None
@@ -75,29 +78,52 @@ class PoseReader:
         return True
 
     def _read(self):
-        cur, pos = None, {}
+        cur, block = None, None
+        pos, orient = {}, {}
         for line in self._proc.stdout:
             if self._stop.is_set():
                 break
             m = _NAME.search(line)
             if m:
-                cur, pos = m.group(1), {}
+                cur, block = m.group(1), None
+                pos, orient = {}, {}
                 self._names.add(cur)
                 continue
             if cur is None or not cur.startswith(self.prefix):
                 continue
-            for key, rx in (("x", _X), ("y", _Y), ("z", _Z)):
-                mm = rx.match(line)
-                if mm and key not in pos:
-                    pos[key] = float(mm.group(1))
-            # Position comes before orientation in a pose block, so three
-            # components mean this one is complete.
-            if len(pos) == 3:
-                self._pos = (pos["x"], pos["y"], pos["z"])
-                cur, pos = None, {}
+            b = _BLOCK.match(line)
+            if b:
+                block = b.group(1)
+                continue
+            f = _FIELD.match(line)
+            if f and block:
+                (pos if block == 'position' else orient)[f.group(1)] = \
+                    float(f.group(2))
+                continue
+            # A closing brace at the outer indent ends this model's block.
+            if line.startswith('}'):
+                if pos or orient:
+                    self._pos = (pos.get('x', 0.0), pos.get('y', 0.0),
+                                 pos.get('z', 0.0))
+                    q = (orient.get('x', 0.0), orient.get('y', 0.0),
+                         orient.get('z', 0.0), orient.get('w', 0.0))
+                    self._quat = q if any(q) else (0.0, 0.0, 0.0, 1.0)
+                cur, block = None, None
 
     def latest(self) -> Optional[Tuple[float, float, float]]:
         return self._pos
+
+    def latest_quat(self) -> Optional[Tuple[float, float, float, float]]:
+        """(x, y, z, w) of the model's true orientation, or None.
+
+        This was not read at all until now, and every offline measurement that
+        needed a camera ray synthesised a yaw-only quaternion instead -- which
+        assumes an airframe that is exactly level. A drone that has just been
+        teleported is not: measured against the true attitude, the assumed ray
+        sat about 4 degrees steeper than the direction to the object, and the
+        plane projection it fed came out 20-35% short.
+        """
+        return self._quat
 
     def wait_for_pose(self, timeout: float = 10.0) -> Optional[Tuple[float, float, float]]:
         t0 = time.time()

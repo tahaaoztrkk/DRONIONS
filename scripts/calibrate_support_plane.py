@@ -38,8 +38,9 @@ sys.path.insert(0, '/home/taha/DRONIONS')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from perception.detector import YOLOWorldDetector
 from perception.filters import filter_candidates
-from navigation.spatial import (SUPPORT_HEIGHTS, camera_ray_world,
-                                project_to_plane, range_from_apparent_size)
+from navigation.spatial import (SUPPORT_HEIGHTS, camera_origin_world,
+                                camera_ray_world, project_to_plane,
+                                range_from_apparent_size)
 from gz_pose import PoseReader, find_world
 from experiment_small_objects import (Grab, MODEL, assert_lens_matches, fresh,
                                       place, project_into_frame, settled_pose,
@@ -69,6 +70,9 @@ def plane_hits(candidate, drone_xyz, quat):
     if getattr(candidate, 'image_height', 0):
         v = candidate.bbox[3] / candidate.image_height
     ray = camera_ray_world(u, v, quat)
+    # From the lens, not from base_link -- see CAMERA_MOUNT. Casting from the
+    # pose origin is what made this calibration's plane answers read short.
+    drone_xyz = camera_origin_world(drone_xyz, quat)
     out = {}
     for z in SUPPORT_HEIGHTS:
         hit = project_to_plane(drone_xyz, ray, z)

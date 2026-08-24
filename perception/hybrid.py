@@ -183,8 +183,22 @@ class HybridDetector:
             overlapping = [t for t in everything
                            if _overlap(c.bbox, t.bbox) > OVERLAP_SAME_THING]
             if not overlapping:
-                # Nothing the trained model recognises is there. It may be an
-                # object it was never shown, so the open model keeps its say.
+                if mine:
+                    # The trained model has found this class in this frame,
+                    # somewhere else. A second box for it that does not overlap
+                    # any of them is the open model outlining something bigger
+                    # -- measured, a 265 px box where the trained one was 82,
+                    # the whole table rather than the laptop on it. The model
+                    # then approved it, correctly describing what was in the
+                    # crop, and the size implied by that width put the target
+                    # 0.8 m from a drone that was three metres away.
+                    #
+                    # Where the trained model has an opinion about a class, it
+                    # is the authority on that class: 100% against 53%.
+                    self.suppressed += 1
+                    continue
+                # It has found nothing of this class here, so it may simply
+                # have missed, or this may be an object it was never shown.
                 merged.append(c)
                 continue
             # It is on something identified. Same class means the two models
