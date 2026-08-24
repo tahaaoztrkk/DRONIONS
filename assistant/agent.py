@@ -1,23 +1,50 @@
 """
 Görevi: Kullanıcının komutunu alır, kameradan fotoğraf çeker ve Gemini VLM'e göndererek nesneyi arar.
 """
+import os
 import re
 import cv2
 import numpy as np
 import PIL.Image
 from config import GEMINI_API_KEY, GEMINI_MODEL
 
+# How long a single VLM call may take, and how hard the SDK may retry it.
+#
+# The drone holds position for the duration of a call -- it has to, or the
+# answer arrives about a frame the drone has already flown past. That hold is
+# only safe if the call is bounded, and by default it is not: the SDK retries a
+# 429 internally with exponential backoff and returns only when it finally
+# succeeds. Measured on the free tier's 20th call of the day, one search call
+# took 4 minutes 46 seconds and the drone hovered still for all of it, having
+# already detected the book in the first second. Nothing in the log said why --
+# no 429 ever reached our own handler, because the SDK never surfaced one.
+#
+# Bounded here instead: one retry, then the failure comes back to the caller,
+# which already knows to wait and keep searching rather than freeze. Being told
+# "still looking" for fifteen seconds is a worse answer than a fast one and a
+# better answer than a stationary drone.
+VLM_TIMEOUT_MS = int(os.getenv("DRONIONS_VLM_TIMEOUT_MS", "15000"))
+VLM_ATTEMPTS = int(os.getenv("DRONIONS_VLM_ATTEMPTS", "2"))
+
 try:
     from google import genai
     from google.genai import types
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(
+            timeout=VLM_TIMEOUT_MS,
+            retry_options=types.HttpRetryOptions(
+                attempts=VLM_ATTEMPTS,
+                initial_delay=1.0,
+                max_delay=4.0,
+            ),
+        ),
+    )
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
     print("Warning: google-genai is not installed properly.")
 
-
-import os
 
 def capture_and_analyze(frame: np.ndarray, target: str, reference_img_path: str = None) -> dict:
     """

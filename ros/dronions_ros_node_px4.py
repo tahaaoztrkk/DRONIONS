@@ -2300,14 +2300,24 @@ def main():
                         node.set_desired_twist(
                             hold_altitude_twist(node.current_altitude()))
                         vlm_asked_at = node.horizontal_pose()
+                        vlm_started_at = time.time()
                         result = select_candidate(frame, search_candidates, target,
                                                   other_refs=other_refs_for(target),
                                                   extra_ref_paths=ref_paths_for(target),
                                                   reference_img_path=ref_path)
+                        vlm_took = time.time() - vlm_started_at
                         moved, turned = pose_delta(vlm_asked_at,
                                                    node.horizontal_pose())
+                        # How long the drone stood still for. Without it a call
+                        # that the SDK quietly retried for nearly five minutes
+                        # was indistinguishable in the log from a search that
+                        # simply took a while to find a small object -- the
+                        # conclusion drawn from it was that the book was hard to
+                        # find, when the book had been detected in the first
+                        # second and the wait was the daily quota.
                         log_event(f"Gemini beklerken kayma: {moved:.2f} m, "
-                                  f"{math.degrees(turned):.0f} derece.")
+                                  f"{math.degrees(turned):.0f} derece "
+                                  f"({vlm_took:.1f} s surdu).")
                         if moved > VLM_DRIFT_MAX_M or turned > VLM_DRIFT_MAX_RAD:
                             # The hold did not hold -- wind, or the answer took
                             # long enough for the residual to matter. The crops
@@ -2330,6 +2340,13 @@ def main():
                     rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
 
                     if rate_limited:
+                        # Logged, not just printed. A run where the quota ran
+                        # out looked in the log exactly like a run where the
+                        # search was slow -- five minutes of no output, and the
+                        # only difference on the console, which the log kept but
+                        # nobody read against the timestamps.
+                        log_event(f"Gemini kotasi doldu -- {RATE_LIMIT_BACKOFF:.0f}s "
+                                  f"beklenip aramaya devam edilecek.")
                         print(f"\n[!] Gemini kotası doldu, {RATE_LIMIT_BACKOFF:.0f}s bekleniyor...")
                         last_vlm_check_time = current_time + RATE_LIMIT_BACKOFF - VLM_CHECK_INTERVAL
                     else:
