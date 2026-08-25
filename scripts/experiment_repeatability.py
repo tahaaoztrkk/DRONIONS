@@ -255,7 +255,8 @@ def parse_approach(lines, run_id):
     row["handoffs"] = sum(1 for l in lines if "takibe geciliyor" in l)
 
     row.update({"locked": "", "tgt_x": "", "tgt_y": "",
-                "drone_x": "", "drone_y": "", "obstacle_gap": ""})
+                "drone_x": "", "drone_y": "", "obstacle_gap": "",
+                "start_x": "", "start_y": ""})
     for l in lines:
         m = _LOCK.search(l)
         if m:
@@ -323,9 +324,40 @@ def report_approach(rows):
               "yukaridaki temiz sonuclar onlar hakkinda bilgi vermez.")
 
 
+# Where the drone starts each run, cycled by run index.
+#
+# Every campaign before this one started the drone in the same place, and the
+# script's own diversity check said so on every report: "2 kosudan 2 tanesi
+# ayni noktada". The trained detector finds the target from the takeoff spot,
+# so the sweep barely runs and varying DRONIONS_SWEEP_START changes nothing --
+# the drone has already seen the target before it moves.
+#
+# It mattered. Across eight full flights the one run that began somewhere else
+# was also the one that went to the wrong object: from (0.93, -1.18) the phone
+# was 52x26 px seen almost edge-on, the estimate fell 0.73 m out and landed
+# nearer the bottle than the phone, while the run that began at the origin and
+# looked at it head-on was 0.04 m out. Viewing angle, not detection -- the log
+# reads etiket=phone in both.
+#
+# Chosen for spread in bearing to the table, and for at least 0.8 m of
+# clearance from every piece of furniture, since PX4 spawns the airframe on the
+# floor and a spawn inside the sofa is not a viewpoint.
+START_POSES = [
+    (0.0, 0.0),      # head-on, the baseline every earlier campaign used
+    (0.0, 1.2),      # north side
+    (1.9, -1.2),     # south-east, oblique
+    (2.4, 1.2),      # north-east, oblique and close
+    (-0.8, -0.6),    # far west, longest range
+    (2.6, -1.3),     # south-east corner, sharpest angle
+]
+
+
 def one_run(idx, total, timeout, approach=False, full=False):
+    sx, sy = START_POSES[(idx - 1) % len(START_POSES)]
     env = dict(os.environ, HEADLESS="1", DRONIONS_TARGET=TARGET,
-               WORLD=WORLD, COMMAND_DELAY="45")
+               WORLD=WORLD, COMMAND_DELAY="45",
+               # PX4 reads this at spawn; the chain inherits our environment.
+               PX4_GZ_MODEL_POSE=f"{sx},{sy},0.15,0,0,0")
     if full:
         # The real thing: the model identifies the target and the drone flies
         # to it. This is the only mode that costs API quota, and the only one
@@ -351,7 +383,8 @@ def one_run(idx, total, timeout, approach=False, full=False):
         env.pop("DRONIONS_FAKE_VLM", None)
     env.pop("INTERACTIVE", None)
     before = RUN_LOG.stat().st_size if RUN_LOG.exists() else 0
-    print(f"[{idx}/{total}] basliyor {datetime.now():%H:%M:%S} ...", flush=True)
+    print(f"[{idx}/{total}] basliyor {datetime.now():%H:%M:%S} "
+          f"baslangic=({sx}, {sy}) ...", flush=True)
     try:
         subprocess.run(["bash", str(CHAIN)], env=env, timeout=timeout,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -370,6 +403,7 @@ def one_run(idx, total, timeout, approach=False, full=False):
         return []
     if approach or full:
         row = parse_approach(runs[-1], idx)
+        row["start_x"], row["start_y"] = f"{sx:.2f}", f"{sy:.2f}"
         print(f"[{idx}/{total}] takibe gecis={row['handoffs']} varis={row['arrived']} "
               f"temas={row['contact']} engel={row['blocked']} "
               f"erken_varis_reddi={row['arrival_denied']}", flush=True)
@@ -501,7 +535,8 @@ def main():
 
     if a.approach or a.full:
         fields = (["run", "handoffs"] + list(APPROACH_EVENTS)
-                  + ["locked", "tgt_x", "tgt_y", "drone_x", "drone_y", "obstacle_gap"])
+                  + ["locked", "tgt_x", "tgt_y", "drone_x", "drone_y",
+                     "obstacle_gap", "start_x", "start_y"])
     else:
         fields = ["run", "t", "rank", "conf", "area", "width", "hue",
                   "world_x", "world_y", "drone_x", "drone_y",
