@@ -59,6 +59,7 @@ REPO = Path(__file__).resolve().parent.parent
 RUN_LOG = REPO / "logs" / "dronions_run.log"
 OUT_CSV = REPO / "logs" / "repeatability.csv"
 APPROACH_CSV = REPO / "logs" / "approach.csv"
+FULL_CSV = REPO / "logs" / "full_flight.csv"
 CHAIN = REPO / "scripts" / "run_sim_chain.sh"
 
 # Ground truth per world. All static, so this is read from the SDF once and
@@ -199,6 +200,12 @@ APPROACH_EVENTS = {
     # measured nothing about the search, and counting it as a search failure
     # is how these looked like a colour-filter regression.
     "pose_broken":    ("Ucus anomalisi",        "UCUS ANOMALISI (carpma)"),
+    # Not a search outcome either. A run whose VLM call was throttled measures
+    # the daily quota, not the drone: one book flight sat still for 4m46s on
+    # the 19th call of the day, having already detected the target in the first
+    # second. Counted separately so a slow campaign cannot be read as a slow
+    # search.
+    "throttled":      ("Gemini kotasi doldu",   "kota doldu"),
 }
 
 
@@ -316,10 +323,19 @@ def report_approach(rows):
               "yukaridaki temiz sonuclar onlar hakkinda bilgi vermez.")
 
 
-def one_run(idx, total, timeout, approach=False):
+def one_run(idx, total, timeout, approach=False, full=False):
     env = dict(os.environ, HEADLESS="1", DRONIONS_TARGET=TARGET,
                WORLD=WORLD, COMMAND_DELAY="45")
-    if approach:
+    if full:
+        # The real thing: the model identifies the target and the drone flies
+        # to it. This is the only mode that costs API quota, and the only one
+        # that measures the system rather than a part of it -- survey never
+        # hands off, and --approach hands off to a stand-in that will happily
+        # confirm a distractor.
+        env.pop("DRONIONS_NO_VLM", None)
+        env.pop("DRONIONS_FAKE_VLM", None)
+        env["DRONIONS_SWEEP_START"] = str(idx - 1)
+    elif approach:
         env["DRONIONS_FAKE_VLM"] = "1"
         env.pop("DRONIONS_NO_VLM", None)
         # Start each run at a different waypoint. Without this the sweep is
@@ -352,7 +368,7 @@ def one_run(idx, total, timeout, approach=False):
     if not runs:
         print(f"[{idx}/{total}] log bulunamadi")
         return []
-    if approach:
+    if approach or full:
         row = parse_approach(runs[-1], idx)
         print(f"[{idx}/{total}] takibe gecis={row['handoffs']} varis={row['arrived']} "
               f"temas={row['contact']} engel={row['blocked']} "
@@ -461,17 +477,29 @@ def main():
     ap.add_argument("--timeout", type=int, default=420)
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--approach", action="store_true",
-                    help="VLM yerine boyut filtresini kullan, yaklasma fazini olc")
+                    help="VLM yerine boyut filtresini kullan, yaklasma fazini olc "
+                         "(kota harcamaz, kimlik anlamsiz)")
+    ap.add_argument("--full", action="store_true",
+                    help="gercek VLM ile uctan uca ucus (API kotasi harcar)")
+    ap.add_argument("--target", default=None,
+                    help="hedef nesne; varsayilan DRONIONS_TARGET")
     a = ap.parse_args()
 
+    if a.approach and a.full:
+        raise SystemExit("--approach ile --full birlikte kullanilamaz.")
+    if a.target:
+        globals()["TARGET"] = a.target
+
     if a.report:
-        if not OUT_CSV.exists():
-            raise SystemExit(f"{OUT_CSV} yok.")
-        with open(OUT_CSV, newline='', encoding='utf-8') as f:
-            report(list(csv.DictReader(f)))
+        src = (FULL_CSV if a.full else APPROACH_CSV) if (a.full or a.approach) else OUT_CSV
+        if not src.exists():
+            raise SystemExit(f"{src} yok.")
+        with open(src, newline='', encoding='utf-8') as f:
+            rows = list(csv.DictReader(f))
+        (report_approach if (a.approach or a.full) else report)(rows)
         return
 
-    if a.approach:
+    if a.approach or a.full:
         fields = (["run", "handoffs"] + list(APPROACH_EVENTS)
                   + ["locked", "tgt_x", "tgt_y", "drone_x", "drone_y", "obstacle_gap"])
     else:
@@ -479,17 +507,17 @@ def main():
                   "world_x", "world_y", "drone_x", "drone_y",
                   "nearest", "box_err", "is_box"]
     all_rows = []
-    out = APPROACH_CSV if a.approach else OUT_CSV
+    out = (FULL_CSV if a.full else APPROACH_CSV) if (a.full or a.approach) else OUT_CSV
     with open(out, "w", newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for i in range(1, a.n + 1):
-            rows = one_run(i, a.n, a.timeout, approach=a.approach)
+            rows = one_run(i, a.n, a.timeout, approach=a.approach, full=a.full)
             all_rows += rows
             w.writerows(rows)
             f.flush()          # Ctrl-C keeps what has run so far
     print(f"\n-> {out}")
-    (report_approach if a.approach else report)(all_rows)
+    (report_approach if (a.approach or a.full) else report)(all_rows)
 
 
 if __name__ == "__main__":
