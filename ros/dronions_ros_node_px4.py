@@ -1287,6 +1287,25 @@ class DronionsRosNodePX4(Node):
     def ekf_ready(self) -> bool:
         return self._pose_count >= 20 and self._has_global_origin
 
+    def begin_cruise(self):
+        """Takeoff is over; start judging speed against cruise limits.
+
+        MAX_SUSTAINED_SPEED describes cruise -- 0.25 m/s horizontally, about
+        0.5 m/s vertically -- and the climb is neither. With the window still
+        holding the climb, a takeoff that reached 1.7 m in five seconds
+        registered 2.9 m of motion in 2.91 s, grazed the 1.0 m/s limit, and the
+        run was aborted with "I have lost control, I may have hit something"
+        one second after it started searching. Nothing had been hit. The
+        recorded crash this detector was built from ran at 9.9 m/s, ten times
+        over.
+
+        Clearing the window here rather than raising the limit: the limit is
+        right for the phase it was measured in, and raising it would blind the
+        detector to real divergence during the search, which is when it
+        matters.
+        """
+        self._pose_track.clear()
+
     def pose_jump(self):
         """(metres, seconds) of motion the airframe cannot command, or None.
 
@@ -1609,6 +1628,7 @@ def startup_sequence(node: DronionsRosNodePX4):
     if not node.state.armed:
         raise RuntimeError("Kalkis sirasinda disarm oldu (muhtemelen bir PX4 failsafe/RTL tetiklendi)")
 
+    node.begin_cruise()
     log_event(f"PX4: hedef irtifada ({node.current_altitude():.1f}m). Arama basliyor.")
 
 
