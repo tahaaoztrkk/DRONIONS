@@ -734,6 +734,30 @@ def close_on_point_twist(node, xy, current_z: float, target_z=None) -> Twist:
 #
 # On real hardware this is what magnetometer calibration addresses. A drone
 # with a badly calibrated compass shows exactly this signature.
+# Where the airframe spawned, in world coordinates.
+#
+# PX4's local position is measured from the spawn point, so it equals the world
+# frame only when the drone starts at the world origin -- which every run in
+# this project did, so nothing ever revealed the assumption. Moving the spawn
+# to vary the viewing angle exposed it immediately: five of six runs from new
+# start positions never confirmed the target at all, because the search area
+# and the objects' positions are written in world coordinates and the drone was
+# reading them in a frame shifted by its own start.
+#
+# Left at zero unless told otherwise, which is the case for a normal flight.
+# The measurement campaign sets it to whatever it passed to PX4_GZ_MODEL_POSE.
+def _world_offset():
+    raw = os.getenv("DRONIONS_WORLD_OFFSET", "")
+    if not raw:
+        return (0.0, 0.0, 0.0)
+    parts = [float(v) for v in raw.replace(",", " ").split()]
+    while len(parts) < 3:
+        parts.append(0.0)
+    return tuple(parts[:3])
+
+
+WORLD_OFFSET = _world_offset()
+
 HEADING_BIAS_DEG = float(os.getenv("DRONIONS_HEADING_BIAS_DEG", "0.0"))
 HEADING_BIAS_RAD = math.radians(HEADING_BIAS_DEG)
 
@@ -1229,7 +1253,17 @@ class DronionsRosNodePX4(Node):
         return self._x, self._y, self._yaw
 
     def pose_xyz(self):
-        return (self._x, self._y, self._z)
+        """Position in world coordinates, not in PX4's local frame.
+
+        See WORLD_OFFSET. PX4 anchors its local frame at the point the airframe
+        spawned, so a drone standing at (2.4, 1.2) in the world reports itself
+        at (0.2, 0.0), and every world-frame quantity the search uses -- the
+        area it is allowed to sweep, the positions it reports, the ground truth
+        a run is scored against -- silently refers to somewhere else.
+        """
+        return (self._x + WORLD_OFFSET[0],
+                self._y + WORLD_OFFSET[1],
+                self._z + WORLD_OFFSET[2])
 
     def orientation(self):
         """Attitude to cast camera rays with, corrected for heading bias.
