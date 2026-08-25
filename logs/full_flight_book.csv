@@ -1,2 +1,3 @@
 run,handoffs,arrived,arrival_denied,contact,blocked,size_drop,center_fail,lost,strayed,gave_up,pose_broken,throttled,locked,tgt_x,tgt_y,drone_x,drone_y,obstacle_gap
-1,1,1,0,0,0,0,0,0,0,0,0,0,bottle,2.01,-0.57,0.93,-1.18,0.46
+1,1,1,0,0,0,0,0,0,0,0,0,0,book,2.98,-0.29,0.00,0.09,0.24
+2,1,1,0,0,0,0,0,0,0,0,0,0,book,3.23,-0.30,0.07,0.08,0.22

@@ -22,6 +22,15 @@ Scoring is deliberately identical to compare_detectors.py -- a detection counts
 only if its box covers where the object truly is, at roughly the width geometry
 predicts -- so the two numbers can be read side by side.
 
+Nothing here writes weights. The model is loaded, `set_classes` is called per
+object, and that is all -- deliberately, because the weights the flying system
+depends on are not under version control (.gitignore carries *.pt), so an
+overwrite would have no way back. The docs' own "prompt-then-detect" recipe
+ends in `model.save()`, which pointed at the same filename would replace
+yolov8x-worldv2.pt in place. Checksums of the three files in use are recorded
+in logs/weights.sha256 and copies live in ~/dronions_weights_backup; verify
+with `sha256sum -c logs/weights.sha256` after any training run.
+
   scripts/measure_open_vocab.py                       # stock YOLO-World
   scripts/measure_open_vocab.py --weights runs/detect/world_ft/weights/best.pt
 """
