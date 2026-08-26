@@ -785,6 +785,24 @@ def _start_at():
 
 START_AT = _start_at()
 
+# Seconds of sweeping before the search is allowed to identify anything.
+#
+# A user's drone does not launch from the same square metre every time, so a
+# campaign that always sees the target from the takeoff spot measures one
+# approach geometry and calls it a distribution. Two attempts to vary the
+# starting point by moving the vehicle were both defeated by PX4: shifting the
+# spawn leaves the EKF with an invalid heading estimate and it diverges, and
+# flying a transit before the search trips a failsafe that lands the aircraft.
+#
+# This gets there without moving anything. The sweep already carries the drone
+# around the room; holding identification back for a few seconds simply means
+# the first sighting happens from wherever the pattern has taken it. Detection
+# still runs -- the overlay and the survey log stay honest about what was
+# visible -- only the handoff waits.
+#
+# Zero by default, which is the behaviour every earlier flight had.
+SEARCH_WARMUP_SECONDS = float(os.getenv("DRONIONS_SEARCH_WARMUP", "0"))
+
 HEADING_BIAS_DEG = float(os.getenv("DRONIONS_HEADING_BIAS_DEG", "0.0"))
 HEADING_BIAS_RAD = math.radians(HEADING_BIAS_DEG)
 
@@ -1838,6 +1856,7 @@ def main():
     surfaces = Surfaces()
     surface_scan_after = 0.0
     search_started_at = 0.0
+    warmup_noted = False
     inspect_item = None
     inspect_until = 0.0
     # Wall-clock grace, because the frame count turned out to mean something
@@ -1959,6 +1978,7 @@ def main():
                     # worth a second look -- the last search's visits say
                     # nothing about where this object is.
                     search_started_at = time.time()
+                    warmup_noted = False
                     inspect_item = None
                     surfaces.reset_visits()
                     last_seen_xy = None
@@ -2438,7 +2458,15 @@ def main():
                     break
 
                 current_time = time.time()
-                if search_candidates and current_time - last_vlm_check_time > VLM_CHECK_INTERVAL:
+                warming_up = (SEARCH_WARMUP_SECONDS > 0 and search_started_at
+                              and current_time - search_started_at
+                              < SEARCH_WARMUP_SECONDS)
+                if warming_up and search_candidates and not warmup_noted:
+                    warmup_noted = True
+                    log_event(f"Isinma: ilk {SEARCH_WARMUP_SECONDS:.0f} s boyunca "
+                              f"tanimlama yapilmiyor, supurme suruyor.")
+                if (search_candidates and not warming_up
+                        and current_time - last_vlm_check_time > VLM_CHECK_INTERVAL):
                     ref_path = ref_path_for(target)
 
                     # Hold station for the duration of the call. The setpoint
