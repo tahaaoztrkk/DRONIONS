@@ -1228,7 +1228,13 @@ class DronionsRosNodePX4(Node):
             step = math.dist((msg.pose.position.x, msg.pose.position.y,
                               msg.pose.position.z), (self._x, self._y, self._z))
             if dt > 1e-3 and step / dt > MAX_POSE_SPEED:
-                self._pose_jump = (step, dt)
+                self._pose_jump = (step, dt,
+                                   (round(self._x, 2), round(self._y, 2),
+                                    round(self._z, 2)),
+                                   (round(msg.pose.position.x, 2),
+                                    round(msg.pose.position.y, 2),
+                                    round(msg.pose.position.z, 2)),
+                                   self._cruising)
 
         # A jump between consecutive messages is the obvious failure; a ramp is
         # the one that slips through. One diverged run drifted 31 m over 19 s
@@ -1255,7 +1261,16 @@ class DronionsRosNodePX4(Node):
                 else:
                     moved = math.dist((p[1], p[2]), (x0, y0))
                 if moved / span > MAX_SUSTAINED_SPEED:
-                    self._pose_jump = (moved, span)
+                    # The endpoints, not just the distance. "3.0 m in 2.97 s"
+                    # cannot be read: a drone that genuinely flew three metres
+                    # and an estimator that jumped three metres produce the
+                    # same number, and they call for opposite responses. With
+                    # the two points in the log it is one glance.
+                    self._pose_jump = (moved, span,
+                                       (round(x0, 2), round(y0, 2), round(z0, 2)),
+                                       (round(p[1], 2), round(p[2], 2),
+                                        round(p[3], 2)),
+                                       self._cruising)
         self._pose_count += 1
         self._last_pose_time = now
 
@@ -1941,9 +1956,14 @@ def main():
             jump = node.pose_jump()
             if jump and not pose_broken:
                 pose_broken = True
-                log_event(f"Ucus anomalisi: {jump[0]:.1f} m hareket "
-                          f"{jump[1]:.2f} s icinde ({jump[0]/jump[1]:.1f} m/s) -- "
-                          f"komut edilen hizin cok ustunde. Arama durduruluyor.")
+                phase = "seyir" if (len(jump) > 4 and jump[4]) else "kalkis"
+                where = ""
+                if len(jump) > 3:
+                    where = f" {jump[2]} -> {jump[3]}"
+                log_event(f"Ucus anomalisi ({phase}): {jump[0]:.1f} m hareket "
+                          f"{jump[1]:.2f} s icinde ({jump[0]/jump[1]:.1f} m/s)"
+                          f"{where} -- komut edilen hizin cok ustunde. "
+                          f"Arama durduruluyor.")
                 dialogue.abort("Kontrolü kaybettim, bir yere çarpmış olabilirim. "
                                "Aramayı durduruyorum.")
                 target = None
