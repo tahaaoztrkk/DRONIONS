@@ -359,13 +359,11 @@ def one_run(idx, total, timeout, approach=False, full=False):
     sx, sy = START_POSES[(idx - 1) % len(START_POSES)]
     env = dict(os.environ, HEADLESS="1", DRONIONS_TARGET=TARGET,
                WORLD=WORLD, COMMAND_DELAY="45",
-               # PX4 reads this at spawn; the chain inherits our environment.
-               PX4_GZ_MODEL_POSE=f"{sx},{sy},0.15,0,0,0",
-               # And the node has to be told, or it reads world-frame numbers
-               # -- the search area, the objects' positions -- in a frame
-               # shifted by the spawn. Five of six runs failed that way before
-               # this line existed, never confirming the target at all.
-               DRONIONS_WORLD_OFFSET=f"{sx},{sy},0")
+               # The vehicle spawns where PX4 expects and flies to the start
+               # point itself. Moving the spawn instead was tried and breaks
+               # the estimator -- see _start_at() in the node. The world frame
+               # therefore needs no offset.
+               DRONIONS_START_AT=f"{sx},{sy}")
     if full:
         # The real thing: the model identifies the target and the drone flies
         # to it. This is the only mode that costs API quota, and the only one

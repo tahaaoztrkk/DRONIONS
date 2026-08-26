@@ -758,6 +758,33 @@ def _world_offset():
 
 WORLD_OFFSET = _world_offset()
 
+
+def _start_at():
+    """Where to fly to after takeoff, before searching, or None.
+
+    A drone deployed by a user does not launch from the same square metre every
+    time, so a campaign that always begins at one point measures one approach
+    and calls it a distribution. Varying it by moving the *spawn* was the first
+    attempt and it broke the estimator: PX4 anchors its EKF to a fixed
+    simulated GPS origin, and a model placed somewhere else fails preflight
+    with "heading estimate invalid", arms anyway after a retry, and then
+    diverges -- measured, positions of z = -4.5 m and y outside the room, which
+    the crash detector duly reported as flight anomalies. Every run that
+    spawned at the origin was clean.
+
+    So the vehicle spawns where PX4 expects and flies to the start position
+    under its own control, which is also what a real deployment looks like: the
+    drone leaves the user and is already somewhere else when the search begins.
+    """
+    raw = os.getenv("DRONIONS_START_AT", "")
+    if not raw:
+        return None
+    parts = [float(v) for v in raw.replace(",", " ").split()]
+    return (parts[0], parts[1]) if len(parts) >= 2 else None
+
+
+START_AT = _start_at()
+
 HEADING_BIAS_DEG = float(os.getenv("DRONIONS_HEADING_BIAS_DEG", "0.0"))
 HEADING_BIAS_RAD = math.radians(HEADING_BIAS_DEG)
 
@@ -1664,7 +1691,43 @@ def startup_sequence(node: DronionsRosNodePX4):
         raise RuntimeError("Kalkis sirasinda disarm oldu (muhtemelen bir PX4 failsafe/RTL tetiklendi)")
 
     node.begin_cruise()
+    if START_AT:
+        fly_to_start(node, START_AT)
     log_event(f"PX4: hedef irtifada ({node.current_altitude():.1f}m). Arama basliyor.")
+
+
+def fly_to_start(node, target_xy, timeout_sec: float = 90.0):
+    """Fly to the search's starting point, using the sweep's own steering.
+
+    Same idiom as Wanderer.twist: turn onto the bearing, translate once roughly
+    pointed, hold altitude throughout. Deliberately not a new controller --
+    a second way of flying to a point is a second thing to tune.
+    """
+    tx, ty = target_xy
+
+    def reached():
+        x, y, _ = node.pose_xyz()
+        return math.hypot(tx - x, ty - y) < WAYPOINT_RADIUS
+
+    def tick():
+        x, y, _ = node.pose_xyz()
+        _, _, yaw = node.horizontal_pose()
+        bearing = math.atan2(ty - y, tx - x)
+        err = math.atan2(math.sin(bearing - yaw), math.cos(bearing - yaw))
+        t = Twist()
+        t.linear.z = compute_altitude_vz(node.current_altitude())
+        t.angular.z = max(-AVOID_ANGULAR, min(AVOID_ANGULAR, 1.5 * err))
+        t.linear.x = EXPLORE_LINEAR if abs(err) < 0.6 else 0.0
+        node.set_desired_twist(t)
+
+    log_event(f"Baslangic noktasina gidiliyor: ({tx:.1f}, {ty:.1f})")
+    ok = wait_for(node, reached, timeout_sec, tick_fn=tick)
+    node.set_desired_twist(hold_altitude_twist(node.current_altitude()))
+    x, y, _ = node.pose_xyz()
+    log_event(f"Baslangic noktasi {'alindi' if ok else 'ALINAMADI'}: "
+              f"({x:.2f}, {y:.2f}), hedef ({tx:.1f}, {ty:.1f})")
+    # The transit is not a crash, and it is faster than cruise on purpose.
+    node.begin_cruise()
 
 
 def main():
