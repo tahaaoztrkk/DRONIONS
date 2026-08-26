@@ -339,12 +339,15 @@ def report_approach(rows):
 # looked at it head-on was 0.04 m out. Viewing angle, not detection -- the log
 # reads etiket=phone in both.
 #
-# Chosen for spread in bearing to the table, and for at least 0.8 m of
-# clearance from every piece of furniture, since PX4 spawns the airframe on the
-# floor and a spawn inside the sofa is not a viewpoint.
+# Chosen for spread in bearing to the table, and for clearance from every
+# *object*, not merely every piece of furniture. The first version checked only
+# the furniture and put a start point at (0.0, 1.2), which is 0.14 m from a
+# cardboard box standing at the same height: the airframe spawned inside it.
+# Two campaigns recorded that run as a flight anomaly, which it genuinely was,
+# and a third killed Gazebo's collision solver with an ODE assertion.
 START_POSES = [
     (0.0, 0.0),      # head-on, the baseline every earlier campaign used
-    (0.0, 1.2),      # north side
+    (-0.6, 1.4),     # north side
     (1.9, -1.2),     # south-east, oblique
     (2.4, 1.2),      # north-east, oblique and close
     (-0.8, -0.6),    # far west, longest range

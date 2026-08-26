@@ -1071,6 +1071,7 @@ class DronionsRosNodePX4(Node):
         self._last_pose_time = 0.0
         self._pose_jump = None      # (metres, seconds) of the first bad step
         self._pose_track = deque()  # recent (t, x, y, z) for the sustained check
+        self._cruising = False      # takeoff judges horizontal motion only
         self._has_global_origin = False
 
         # PX4 drops OFFBOARD if the setpoint stream stalls for more than a
@@ -1242,7 +1243,17 @@ class DronionsRosNodePX4(Node):
             t0, x0, y0, z0 = self._pose_track[0]
             span = now - t0
             if span >= POSE_SPEED_WINDOW * 0.5:
-                moved = math.dist((p[1], p[2], p[3]), (x0, y0, z0))
+                # Before cruise the climb is legitimately fast vertically and
+                # the limit describes cruise, so only horizontal motion is
+                # judged. That still catches what actually goes wrong on
+                # takeoff: a spawn overlapping an object, where the contact
+                # solver throws the airframe sideways. Ignoring takeoff
+                # entirely was the previous attempt and it was wrong -- the
+                # runs it silenced were real.
+                if self._cruising:
+                    moved = math.dist((p[1], p[2], p[3]), (x0, y0, z0))
+                else:
+                    moved = math.dist((p[1], p[2]), (x0, y0))
                 if moved / span > MAX_SUSTAINED_SPEED:
                     self._pose_jump = (moved, span)
         self._pose_count += 1
@@ -1304,16 +1315,16 @@ class DronionsRosNodePX4(Node):
         detector to real divergence during the search, which is when it
         matters.
 
-        The latch has to go with it, and the first version of this forgot that.
-        Clearing only the window left the verdict already recorded during the
-        climb still set, so the same start position aborted the same way on the
-        next campaign -- the search loop read a latch from the takeoff two
-        seconds after cruise began, and reported a 2.92 s window that could not
-        have accumulated since the clear. That inconsistency is what gave it
-        away.
+The latch is deliberately left alone. An earlier version cleared it, on the
+        belief that the aborts at one start position were false alarms. They
+        were not: that spawn point sat 0.14 m from a cardboard box at the same
+        height, so the airframe was spawning inside it and being shoved out --
+        real motion, correctly detected, and once violent enough to kill
+        Gazebo's collision solver outright. Clearing the latch would have
+        hidden exactly the failures worth seeing.
         """
+        self._cruising = True
         self._pose_track.clear()
-        self._pose_jump = None
 
     def pose_jump(self):
         """(metres, seconds) of motion the airframe cannot command, or None.
