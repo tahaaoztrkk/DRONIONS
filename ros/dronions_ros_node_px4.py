@@ -1303,8 +1303,17 @@ class DronionsRosNodePX4(Node):
         right for the phase it was measured in, and raising it would blind the
         detector to real divergence during the search, which is when it
         matters.
+
+        The latch has to go with it, and the first version of this forgot that.
+        Clearing only the window left the verdict already recorded during the
+        climb still set, so the same start position aborted the same way on the
+        next campaign -- the search loop read a latch from the takeoff two
+        seconds after cruise began, and reported a 2.92 s window that could not
+        have accumulated since the clear. That inconsistency is what gave it
+        away.
         """
         self._pose_track.clear()
+        self._pose_jump = None
 
     def pose_jump(self):
         """(metres, seconds) of motion the airframe cannot command, or None.
