@@ -225,6 +225,42 @@ değildir; fine-tune öncesi/sonrası karşılaştırması için tutarlı bir ta
 
 ---
 
+## 10. YOLO-World'ü fine-tune etmek açık sözlüğü tamamen yok ediyor
+
+Danışman önerisi: ayrı bir kapalı-kümeli model yerine YOLO-World'ün kendisini
+oda verimizle fine-tune etmek. Önerilen dört önlem de uygulandı — `freeze=10`
+(omurga donuk), `lr0=0.001`, 40 epoch sınırı, `patience=10` erken durdurma.
+Eğitim 22 epoch'ta durdu, 20 dakika, zirve GPU 3.39 GiB, 960 piksel.
+
+| | fine-tune öncesi | fine-tune sonrası |
+|---|---|---|
+| **görülmemiş sekiz nesne** | 30/51 (%59) | **0/42 (%0)** |
+| eğitilen dört nesne | 8/32 (%25) | 28/28 (%100) |
+
+Açık sözlük zayıflamadı, **yok oldu**. 42 örnekte tek tespit yok. Referansta
+8/8 olan `table`, 8/8 olan `bookshelf`, 5/5 olan `chair` — hepsi sıfır.
+
+**Ölçüm sağlam:** aynı `set_classes` yolu eğitilen dört sınıfta 28/28 veriyor,
+yani mekanizma çalışıyor; model yalnızca görmediği kelimelere cevap vermiyor.
+
+**Neden önlemler yetmedi:** YOLO-World'ün açık sözlüğü omurgada durmuyor.
+Metin gömülmeleri (`txt_feats`, 1×80×512) ile görüntünün hizalanması modül 21
+(`C2fAttn`) ve 22 (`WorldDetect`) içinde — `freeze=10`'un eğitilebilir bıraktığı
+tam o iki modül. Omurgayı dondurmak genel görsel özellikleri korur, sözlüğü
+korumaz.
+
+**Kazanç tarafı hiçbir şey eklemiyor:** fine-tune edilmiş model kendi dört
+nesnesinde %100 yapıyor, ama ayrı eğitilen YOLOv8n zaten 36/36 yapıyor
+(bkz. bölüm 1). Yani takasta kazanılan tek şey "iki model yerine tek model",
+kaybedilen şey projenin üzerine kurulduğu özellik ve aramanın yüzey mantığı.
+
+**Karar: hibrit kalıyor.** Yukarı akıştaki kayıt da aynı yöne işaret ediyordu
+(ultralytics#10038): orada da fine-tune edilmiş YOLO-World hem sıfır-atışı
+kaybetmiş hem de kendi sınıflarında düz YOLOv8'in fine-tune halinden kötü
+çıkmıştı.
+
+---
+
 ## Çürütülmüş hipotezler
 
 Neyin denenip tutmadığı da sonuçtur.
