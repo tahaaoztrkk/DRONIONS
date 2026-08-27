@@ -119,8 +119,15 @@ def main() -> None:
     if fresh(node, g, world) is None:
         sys.exit("Kare yok -- kopru calisiyor mu?")
 
-    from ultralytics import YOLOWorld
-    model = YOLOWorld(a.weights)
+    # Loaded exactly the way the flying system loads it (perception/loader.py):
+    # YOLO(...) then .to(DEVICE). Constructing YOLOWorld(...) and leaving it
+    # where it lands puts the CLIP text encoder on a different device from the
+    # weights, and set_classes dies inside torch.embedding with "index is on
+    # cpu, different from other tensors on cuda:0".
+    from ultralytics import YOLO
+    from config import DEVICE
+    model = YOLO(a.weights)
+    model.to(DEVICE)
     focal = (1280 / 2.0) / math.tan(CAMERA_HFOV / 2.0)
 
     groups = [("gorulmemis", HELD_OUT)]

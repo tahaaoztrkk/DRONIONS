@@ -1,0 +1,13 @@
+weights,object,seen,hit
+yolov8x-worldv2.pt,bowl,4,0
+yolov8x-worldv2.pt,headphones,3,0
+yolov8x-worldv2.pt,bottle,0,0
+yolov8x-worldv2.pt,chair,2,2
+yolov8x-worldv2.pt,table,1,1
+yolov8x-worldv2.pt,sofa,3,2
+yolov8x-worldv2.pt,bookshelf,2,2
+yolov8x-worldv2.pt,cabinet,4,2
+yolov8x-worldv2.pt,laptop,4,4
+yolov8x-worldv2.pt,book,3,1
+yolov8x-worldv2.pt,mug,5,3
+yolov8x-worldv2.pt,phone,3,0
