@@ -192,6 +192,39 @@ artık 15 s zaman aşımı ve tek yeniden denemeyle sınırlı; 429 loglanıyor;
 
 ---
 
+## 9. Açık sözlük neyi tutuyor: mobilyayı, küçük nesneleri değil
+
+YOLO-World'ün, eğitim verimizde **hiç bulunmayan** sekiz nesnedeki geri
+çağırması (`scripts/measure_open_vocab.py`, `logs/open_vocab.csv`). 96 örneğin
+94'ü geçerli.
+
+| görülmemiş | | | görülmemiş | |
+|---|---|---|---|---|
+| chair | 5/5 | | bowl | **0/8** |
+| table | 8/8 | | headphones | **0/5** |
+| bookshelf | 8/8 | | bottle | **0/4** |
+| sofa | 4/5 | | | |
+| cabinet | 5/8 | | **toplam** | **30/51 (%59)** |
+
+Bölünme keskin: **mobilyayı neredeyse kusursuz buluyor, küçük nesneleri hiç
+bulamıyor.**
+
+**Fine-tune kararı açısından anlamı:** açık sözlüğün burada koruduğu şey
+mobilyadır, ve mobilya yüzey taramasının dayandığı şeydir — hedefin masada mı
+koltukta mı olduğunu anlama yeteneği oradan gelir. YOLO-World'ü fine-tune etmek
+bunu kaybettirirse, yalnızca "şarj aletimi bul" özelliği değil, **aramanın
+yüzey mantığı** da gider. Kabul kriteri bunu da kapsamalıdır.
+
+**Ölçüm notu:** aynı betik eğitilen dört nesnede %25 verir (8/32), oysa
+`compare_detectors` %53 verir (19/36). İkisi aynı şeyi ölçmez: uçan sistem
+küratörlü prompt listesi ve negatif prompt'lar kullanır, bu betik ise çıplak
+sınıf adı — çünkü görülmemiş sekiz nesne için küratörlü liste yoktur ve iki
+grubun aynı kuralla ölçülmesi gerekir. Bu sayı uçan sistemin performansı
+değildir; fine-tune öncesi/sonrası karşılaştırması için tutarlı bir taban
+çizgisidir.
+
+---
+
 ## Çürütülmüş hipotezler
 
 Neyin denenip tutmadığı da sonuçtur.
