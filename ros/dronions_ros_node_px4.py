@@ -1857,6 +1857,7 @@ def main():
     surface_scan_after = 0.0
     search_started_at = 0.0
     warmup_noted = False
+    vlm_skipped = 0
     inspect_item = None
     inspect_until = 0.0
     # Wall-clock grace, because the frame count turned out to mean something
@@ -1979,6 +1980,7 @@ def main():
                     # nothing about where this object is.
                     search_started_at = time.time()
                     warmup_noted = False
+                    vlm_skipped = 0
                     inspect_item = None
                     surfaces.reset_visits()
                     last_seen_xy = None
@@ -2465,7 +2467,41 @@ def main():
                     warmup_noted = True
                     log_event(f"Isinma: ilk {SEARCH_WARMUP_SECONDS:.0f} s boyunca "
                               f"tanimlama yapilmiyor, supurme suruyor.")
-                if (search_candidates and not warming_up
+                # Ask the model only when the detector says the *class* is
+                # there. Its job is "is this your phone", not "is this a
+                # phone" -- and on the five objects it was trained on the
+                # detector answers the second question 36 times out of 36, so
+                # a frame with no trained detection of the target has nothing
+                # worth asking about.
+                #
+                # Measured, this is what makes a campaign possible at all. A
+                # flight averaged 4.5 calls and 11 of 27 in one campaign were
+                # the model answering [NONE]; against a free tier of 20 a day
+                # that is four flights, and a six-run campaign could not fit
+                # under any split. The runs that swept longest were the worst:
+                # one made 10 calls, 8 of them [NONE].
+                #
+                # Only for classes the trained model knows. Asked for a
+                # charger it has never seen, uses_trained() is false and every
+                # candidate still goes to the model, which is the open
+                # vocabulary the project is built on.
+                worth_asking = True
+                if getattr(detector, "uses_trained", lambda: False)():
+                    worth_asking = any(
+                        getattr(c, "source", "") == "trained"
+                        and c.label == target
+                        for c in search_candidates)
+                    if not worth_asking and search_candidates:
+                        vlm_skipped += 1
+                        # Counted, not just noted. The saving is the whole
+                        # reason the gate exists, and an unmeasured saving is
+                        # the fourth thing in this project that would have been
+                        # asserted instead of known. Logged every tenth skip so
+                        # the number is in the record without flooding it.
+                        if vlm_skipped == 1 or vlm_skipped % 10 == 0:
+                            log_event(f"Egitilmis model hedefi bulmadi -- VLM'e "
+                                      f"sorulmadi ({vlm_skipped} kare).")
+                if (search_candidates and worth_asking and not warming_up
                         and current_time - last_vlm_check_time > VLM_CHECK_INTERVAL):
                     ref_path = ref_path_for(target)
 
