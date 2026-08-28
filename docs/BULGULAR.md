@@ -263,29 +263,32 @@ kaybetmiş hem de kendi sınıflarında düz YOLOv8'in fine-tune halinden kötü
 
 ## 11. Farklı geometrilerden tekrarlanabilirlik
 
-Altı gerçek uçuş, her biri farklı ısınma süresiyle — tanımlama geciktirilerek
-ilk görme noktası süpürmenin taşıdığı yere kaydırıldı (bkz. `SEARCH_WARMUP`).
+Üç hedef, her biri altı gerçek uçuş, her uçuş farklı ısınma süresiyle —
+tanımlama geciktirilerek ilk görme noktası süpürmenin taşıdığı yere kaydırıldı
+(`DRONIONS_SEARCH_WARMUP`).
 
-| koşu | ısınma | ilk görme yeri | açı | mesafe | kilit | hata |
-|---|---|---|---|---|---|---|
-| 1 | 0 s | (0.02, 0.10) | −6° | 2.61 m | phone | 0.12 m |
-| 2 | 12 s | (1.17, −0.58) | 16° | 1.51 m | phone | 0.11 m |
-| 3 | 24 s | (1.81, −0.19) | 2° | 0.81 m | phone | 0.10 m |
-| 4 | 36 s | (0.60, 0.72) | −24° | 2.20 m | phone | 0.01 m |
-| 5 | 48 s | (2.21, 0.93) | −69° | 1.16 m | phone | 0.06 m |
-| 6 | 60 s | (2.40, −0.72) | 69° | 0.60 m | phone | 0.09 m |
+| hedef | varış | doğru nesne | hata ortancası | en kötü | çeşitlilik |
+|---|---|---|---|---|---|
+| phone | 6/6 | 6/6 | 0.10 m | 0.12 m | iyi (6'da 2 aynı nokta) |
+| laptop | 5/6 | 5/5 | 0.16 m | 0.21 m | zayıf (5'te 3 aynı) |
+| book | 4/6 | 4/4 | 0.13 m | 0.27 m | zayıf (4'te 3 aynı) |
+| **toplam** | **15/18** | **15/15** | **0.13 m** | | |
 
-**6/6 devretme ve varış, 6/6 doğru nesne.** Hata ortancası 0.10 m, en kötüsü
-0.12 m.
+**Yanlış nesneye giden tek koşu yok.** Üç başarısızlığın hiçbiri sistemin
+hatası değil: ikisi Gemini'nin `504 DEADLINE_EXCEEDED` cevabı (servis
+sıkışıklığı), biri günlük kotanın bittiği koşu.
 
-**Çeşitlilik gerçek:** betiğin kendi kontrolü "6 koşudan 2'si aynı noktada"
-diyor; önceki her kampanyada "hepsi aynı" idi. Açılar −69° ile +69°, mesafeler
-0.60–2.61 m.
+Telefonun altı koşusunda ilk görme noktaları odanın dört bir yanına yayıldı:
+açılar −69° ile +69°, mesafeler 0.60–2.61 m. Hata ile bakış açısı arasında yine
+ilişki yok — bu, aynı sonucun üçüncü bağımsız ölçümü.
 
-**Hata bakış açısından bağımsız:** 0.01–0.12 m aralığı ile açı arasında ilişki
-yok. Aynı sonuç üçüncü kez, bu kez altı farklı geometride.
+**Isınmanın çeşitlilik üretmesi nesneye bağlı.** Telefonda işe yaradı,
+laptop ve kitapta yaramadı: ikisinde de ilk görme mesafeleri 2.9–3.4 m, yani
+ısınma biter bitmez nesne zaten uzaktan görülüyor ve drone kıpırdamaya fırsat
+bulmadan devrediyor. Mekanizma çalışıyor ama tek başına yetmiyor.
 
----
+**Kupa ölçülemedi.** Altı koşunun altısı da günlük kotanın tükenmesinden düştü
+(12 × 429); sistem hakkında hiçbir bilgi vermiyor.
 
 ## 12. Kota kapısının kazancı
 

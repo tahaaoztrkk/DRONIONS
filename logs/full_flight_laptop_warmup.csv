@@ -1,0 +1,7 @@
+run,handoffs,arrived,arrival_denied,contact,blocked,size_drop,center_fail,lost,strayed,gave_up,pose_broken,throttled,locked,tgt_x,tgt_y,drone_x,drone_y,obstacle_gap,warmup
+1,1,1,0,0,0,0,0,0,0,0,0,0,laptop,3.00,0.23,0.00,-0.11,0.18,0
+2,1,1,0,0,0,0,0,0,0,0,0,0,laptop,3.14,0.21,0.05,0.04,0.18,12
+3,1,1,0,0,0,0,0,0,0,0,0,0,laptop,2.86,0.16,1.95,-0.16,0.06,24
+4,1,1,0,0,0,0,0,0,0,0,0,0,laptop,2.84,0.21,-0.39,0.53,0.23,36
+5,1,1,0,0,0,0,0,0,0,0,0,0,laptop,2.89,0.26,2.15,0.95,0.39,48
+6,0,0,0,0,0,0,1,0,0,0,0,3,,,,,,,60

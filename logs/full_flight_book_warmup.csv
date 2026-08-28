@@ -1,0 +1,7 @@
+run,handoffs,arrived,arrival_denied,contact,blocked,size_drop,center_fail,lost,strayed,gave_up,pose_broken,throttled,locked,tgt_x,tgt_y,drone_x,drone_y,obstacle_gap,warmup
+1,1,1,0,0,0,0,0,0,0,0,0,0,book,3.04,-0.29,0.15,0.05,0.24,0
+2,1,1,0,0,0,0,0,0,0,0,0,0,book,3.14,-0.32,-0.05,0.02,0.26,12
+3,1,1,0,0,0,0,0,0,0,0,0,0,book,3.04,-0.27,1.93,-0.16,0.23,24
+4,0,0,0,0,0,0,0,0,0,0,0,0,,,,,,,36
+5,0,0,0,0,0,0,0,0,0,0,0,0,,,,,,,48
+6,1,1,0,0,0,0,0,0,0,0,0,0,book,3.32,-0.21,-0.12,-0.79,0.33,60
