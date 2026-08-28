@@ -261,6 +261,47 @@ kaybetmiş hem de kendi sınıflarında düz YOLOv8'in fine-tune halinden kötü
 
 ---
 
+## 11. Farklı geometrilerden tekrarlanabilirlik
+
+Altı gerçek uçuş, her biri farklı ısınma süresiyle — tanımlama geciktirilerek
+ilk görme noktası süpürmenin taşıdığı yere kaydırıldı (bkz. `SEARCH_WARMUP`).
+
+| koşu | ısınma | ilk görme yeri | açı | mesafe | kilit | hata |
+|---|---|---|---|---|---|---|
+| 1 | 0 s | (0.02, 0.10) | −6° | 2.61 m | phone | 0.12 m |
+| 2 | 12 s | (1.17, −0.58) | 16° | 1.51 m | phone | 0.11 m |
+| 3 | 24 s | (1.81, −0.19) | 2° | 0.81 m | phone | 0.10 m |
+| 4 | 36 s | (0.60, 0.72) | −24° | 2.20 m | phone | 0.01 m |
+| 5 | 48 s | (2.21, 0.93) | −69° | 1.16 m | phone | 0.06 m |
+| 6 | 60 s | (2.40, −0.72) | 69° | 0.60 m | phone | 0.09 m |
+
+**6/6 devretme ve varış, 6/6 doğru nesne.** Hata ortancası 0.10 m, en kötüsü
+0.12 m.
+
+**Çeşitlilik gerçek:** betiğin kendi kontrolü "6 koşudan 2'si aynı noktada"
+diyor; önceki her kampanyada "hepsi aynı" idi. Açılar −69° ile +69°, mesafeler
+0.60–2.61 m.
+
+**Hata bakış açısından bağımsız:** 0.01–0.12 m aralığı ile açı arasında ilişki
+yok. Aynı sonuç üçüncü kez, bu kez altı farklı geometride.
+
+---
+
+## 12. Kota kapısının kazancı
+
+VLM'e ancak eğitilmiş dedektör hedef sınıfı bulduysa sorulması (bkz. bölüm 8'in
+devamı) ölçüldü:
+
+| | öncesi | sonrası |
+|---|---|---|
+| koşu başına çağrı | 4.5 | **1.7** |
+| 6 koşuluk kampanya | 27 çağrı (sınır 20 — sığmıyor) | **10 çağrı** |
+
+Kampanyalar artık tek güne sığıyor. Bir koşuda 10 kare atlandı, yani kapı
+gerçekten çalışıyor ve tespit hâlâ görünür olanı dürüstçe kaydediyor.
+
+---
+
 ## Çürütülmüş hipotezler
 
 Neyin denenip tutmadığı da sonuçtur.
@@ -301,11 +342,7 @@ ve sonucu bir sistem hatası gibi okunabilirdi. Kaydı, çünkü kalıp devam ed
 
 ## Açık kalanlar
 
-- Başlangıç konumu çeşitliliği: aracı taşımanın iki yolu da PX4'e çarptı
-  (doğuş kaydırma → EKF ıraksaması; aktarım uçuşu → failsafe RTL). Üçüncü yol
-  (tanımlamayı geciktirmek) uygulandı, ölçümü sürüyor.
 - PX4 statustext kanalının neden sessiz olduğu.
 - Telefonun 0.73 m'lik tek sapması — bakış açısı olmadığı kesinleşti, sebebi
   açık.
 - Varış sonrası konum akışı düşmeleri — iki koşuda dörder kez, zararı görünmüyor.
-- Fine-tune deneyi (hocanın önerisi): ölçüm betiği hazır, koşulmadı.
