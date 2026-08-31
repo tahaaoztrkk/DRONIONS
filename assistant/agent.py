@@ -19,12 +19,25 @@ from config import GEMINI_API_KEY, GEMINI_MODEL
 # already detected the book in the first second. Nothing in the log said why --
 # no 429 ever reached our own handler, because the SDK never surfaced one.
 #
-# Bounded here instead: one retry, then the failure comes back to the caller,
-# which already knows to wait and keep searching rather than freeze. Being told
-# "still looking" for fifteen seconds is a worse answer than a fast one and a
-# better answer than a stationary drone.
-VLM_TIMEOUT_MS = int(os.getenv("DRONIONS_VLM_TIMEOUT_MS", "15000"))
-VLM_ATTEMPTS = int(os.getenv("DRONIONS_VLM_ATTEMPTS", "2"))
+# Bounded here instead: one attempt, then the failure comes back to the caller,
+# which already knows to wait and keep searching rather than freeze.
+#
+# The first version of this bound was 15 s with one retry, and on a day when
+# the service was merely slow it became the main source of failure rather than
+# a guard against one. Measured over 49 calls that day the distribution was
+# bimodal -- 1.8-14.4 s for one group and 16.3-32.4 s for the other, median
+# 17.0 s -- so the bound sat below the median and cut more than half of them
+# off. The very regular 31-32 s cluster was the signature: first attempt cut at
+# 15 s, one retry, cut again, and "read operation timed out" returned after
+# twice the bound.
+#
+# 45 s with no retry covers the slow group with margin and caps a single freeze
+# at 45 s rather than 90. What makes the longer bound affordable is a separate
+# fix: the search deadline no longer counts time spent waiting on the model, so
+# a slow call costs hold time but no longer consumes the window the drone had
+# for covering ground.
+VLM_TIMEOUT_MS = int(os.getenv("DRONIONS_VLM_TIMEOUT_MS", "45000"))
+VLM_ATTEMPTS = int(os.getenv("DRONIONS_VLM_ATTEMPTS", "1"))
 
 try:
     from google import genai
