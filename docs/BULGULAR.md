@@ -287,8 +287,15 @@ laptop ve kitapta yaramadı: ikisinde de ilk görme mesafeleri 2.9–3.4 m, yani
 ısınma biter bitmez nesne zaten uzaktan görülüyor ve drone kıpırdamaya fırsat
 bulmadan devrediyor. Mekanizma çalışıyor ama tek başına yetmiyor.
 
-**Kupa ölçülemedi.** Altı koşunun altısı da günlük kotanın tükenmesinden düştü
-(12 × 429); sistem hakkında hiçbir bilgi vermiyor.
+**Kupa iki denemede de ölçülemedi.** İlk denemede altı koşunun altısı günlük
+kotanın tükenmesinden düştü (12 × 429). Ertesi gün taze kotayla tekrarlandı ve
+yine 0/6 çıktı, bu kez ağırlıklı olarak servis tarafından: **16 × 503
+UNAVAILABLE** ("high demand"), 6 × 504, 14 × 429.
+
+İkisi de sistem hakkında bilgi vermiyor — ölçüm hiç yapılamadı. Kaydı burada
+duruyor çünkü rapordaki dört nesnelik tablonun neden üç nesneyle kaldığını
+açıklayan şey bu, ve dış servise bağımlılığın ölçülebilir bir maliyeti olarak
+kendi başına bir bulgu.
 
 ## 12. Kota kapısının kazancı
 
