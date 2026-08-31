@@ -134,7 +134,7 @@ class Dialogue:
         self._search_started = time.time()
         self._last_narration = 0.0
         self._last_narration_text = None
-        self.say(f"{target} aranıyor.")
+        self.say(f"Looking for the {target}.")
 
     def extend_search(self, seconds, reason=""):
         """Give the current search more time, because something changed.
@@ -163,8 +163,8 @@ class Dialogue:
         self.pending_target = None
         self._search_started = None
         self.have_answer = True
-        self.say(f"{t} bulunamadı. Aradığım alanı tamamen taradım. "
-                 f"Başka bir yerde deneyebilir veya farklı bir şey sorabilirsiniz.")
+        self.say(f"I could not find the {t}. I have searched the whole area. "
+                 f"You can try somewhere else, or ask for something different.")
 
     def abort(self, reason):
         """Stop the search for a reason that is not "it is not there".
@@ -217,7 +217,7 @@ class Dialogue:
             cancelled, self.pending_target = self.pending_target, None
             if rest:
                 return self._propose(rest)
-            self.say(f"{cancelled} araması iptal edildi. Ne aramamı istersiniz?"
+            self.say(f"Search for the {cancelled} cancelled. What should I look for?"
                      if cancelled else
                      "Tamam, iptal ettim. Ne aramamı istersiniz?")
             return {"action": "cancel"}
@@ -226,7 +226,7 @@ class Dialogue:
         if self.pending_target is not None:
             if low in _NO:
                 cancelled, self.pending_target = self.pending_target, None
-                self.say(f"{cancelled} araması iptal edildi. Ne aramamı istersiniz?")
+                self.say(f"Search for the {cancelled} cancelled. What should I look for?")
                 return {"action": "cancel"}
             if low in _YES:
                 # Cleared here, not left to the caller. start_search() also
@@ -247,7 +247,7 @@ class Dialogue:
         if low in _NO:
             self.target = None
             self._search_started = None
-            self.say("Tamam, durduruyorum. Ne aramamı istersiniz?")
+            self.say("All right, stopping. What should I look for?")
             return {"action": "cancel"}
 
         # With an answer already given, a question is about that answer.
@@ -263,8 +263,8 @@ class Dialogue:
         target = parse_command(raw).get("target") or normalize_target(raw) or raw
         self.pending_target = target
         self.history.append(("user", raw))
-        self.say(f"Onaylayın: {target} aramamı istiyorsunuz. "
-                 f"Evet için Enter, iptal için h.", log_prefix="?")
+        self.say(f"Please confirm: you want me to look for the {target}. "
+                 f"Press Enter for yes, h to cancel.", log_prefix="?")
         return {"action": "confirm", "target": target}
 
     @staticmethod

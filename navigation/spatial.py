@@ -606,32 +606,33 @@ def describe_direction(bearing: float) -> str:
     deg = math.degrees(bearing)
     a = abs(deg)
     if a <= 15:
-        return "tam önünüzde"
-    side = "solunuzda" if deg > 0 else "sağınızda"
+        return "straight ahead of you"
+    side = "to your left" if deg > 0 else "to your right"
     if a <= 50:
-        return f"hafif {side}"
+        return f"slightly {side}"
     if a <= 115:
         return side
     if a <= 150:
-        return f"arkanıza doğru, {side}"
-    return "tam arkanızda"
+        return f"behind you, {side}"
+    return "directly behind you"
 
 
 def describe_distance(distance: float) -> str:
     """Metres and paces. Orientation and mobility training uses steps, and
     'about three steps' is easier to act on than '2.1 metres'."""
     if distance < 0.6:
-        return "hemen yanınızda"
+        return "right beside you"
     steps = max(1, round(distance / STEP_LENGTH))
-    return f"yaklaşık {distance:.1f} metre ({steps} adım) ötede"
+    step_word = "step" if steps == 1 else "steps"
+    return f"about {distance:.1f} metres ({steps} {step_word}) away"
 
 
 def height_class(z: float) -> str:
     if z < 0.25:
-        return "yerde"
+        return "on the floor"
     if z < 1.1:
-        return "masa yüksekliğinde"
-    return "raf seviyesinde"
+        return "at table height"
+    return "at shelf height"
 
 
 def describe_target(target_xyz, user_xy, user_yaw: float,

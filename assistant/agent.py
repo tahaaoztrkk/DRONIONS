@@ -138,8 +138,9 @@ _MATCH_TOKEN = re.compile(r'\[(MATCH\s*:\s*\d+|NONE)\]', re.I)
 def _spoken_context(text: str) -> str:
     """The part of the reply meant for the user, and only that.
 
-    The model is asked for a machine token, an English justification and a
-    Turkish sentence, in that order. Only the last is read aloud; the answer
+    The model is asked for a machine token, a justification line and a
+    sentence for the user, in that order. Only the last is read aloud; the
+    answer
     used to be assembled by splitting on the first ']' and keeping the rest,
     which would now speak the justification too. That is the same mistake as
     reading raw API text aloud, arrived at from the other direction.
@@ -254,11 +255,10 @@ def select_candidate(frame: np.ndarray, candidates, target: str,
         f"feature made you certain, in the form 'BECAUSE: <feature>'. Name a "
         f"visible detail, not a category -- 'the taped seam down the middle' "
         f"rather than 'it is a box'.\n"
-        f"Then add ONE short sentence IN TURKISH describing what the object is "
+        f"Then add ONE short sentence IN ENGLISH describing what the object is "
         f"resting on or sitting next to, addressed to the user. "
         f"This sentence is read aloud to a blind person, so do not justify your "
-        f"choice there, do not mention crops, images or numbers, and do not "
-        f"use English in it."
+        f"choice there and do not mention crops, images or numbers."
     )
     contents.append("\n".join(prompt))
 
@@ -348,7 +348,7 @@ def answer_followup(frame: np.ndarray, question: str, history=None,
         "you captured a moment ago, and this is the conversation so far:\n"
         f"{turns}\n"
         f"Answer this follow-up question about that view: \"{question}\"\n"
-        "Reply in Turkish, in at most two short sentences. Be concrete and "
+        "Reply in English, in at most two short sentences. Be concrete and "
         "specific. If the image does not show what is being asked about, say so "
         "plainly rather than guessing."
     )

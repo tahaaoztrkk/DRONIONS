@@ -19,12 +19,25 @@ def tts_worker():
         engine = pyttsx3.init()
         engine.setProperty('rate', 160)
         
-        # İngilizce ses seçimi (Windows'ta genelde Zira veya David vardır)
+        # Bir İngilizce ses seç. Önceki hâli yalnızca Windows seslerini
+        # (Zira, David) arıyordu; Linux'ta ikisi de yok, dolayısıyla döngü
+        # hiçbir şey yapmadan geçiyor ve motorun varsayılanı ne ise o
+        # konuşuyordu -- yani hangi sesin kullanıldığı kontrolümüzde değildi.
+        # Burada espeak'in İngilizce seslerinden biri açıkça seçiliyor,
+        # bulunamazsa varsayılana düşülüyor.
         voices = engine.getProperty('voices')
-        for voice in voices:
-            if "ZIRA" in voice.id.upper() or "DAVID" in voice.id.upper():
-                engine.setProperty('voice', voice.id)
+        preferred = ("ZIRA", "DAVID", "ENGLISH-US", "EN-US", "ENGLISH")
+        chosen = None
+        for want in preferred:
+            for voice in voices:
+                blob = f"{voice.id} {getattr(voice, 'name', '')}".upper()
+                if want in blob:
+                    chosen = voice.id
+                    break
+            if chosen:
                 break
+        if chosen:
+            engine.setProperty('voice', chosen)
                 
         while True:
             text = speech_queue.get()

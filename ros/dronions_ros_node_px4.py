@@ -1682,7 +1682,7 @@ def startup_sequence(node: DronionsRosNodePX4):
         raise RuntimeError("Arm edilemedi (saglik kontrolleri / GCS heartbeat calisiyor mu kontrol et)")
 
     log_event(f"PX4: kalkis - {HOVER_ALTITUDE}m hedefleniyor...")
-    speak("Kalkış yapılıyor.")
+    speak("Taking off.")
 
     climb_start = time.time()
 
@@ -1777,7 +1777,7 @@ def main():
                 time.sleep(3.0)
 
     if not started:
-        speak("Kalkış başarısız oldu.")
+        speak("Takeoff failed.")
         stop_heartbeat.set()
         node.destroy_node()
         rclpy.shutdown()
@@ -2648,7 +2648,7 @@ def main():
                     if result['found']:
                         chosen = search_candidates[result['index']]
                         print("\n[!] Gemini hedefi doğruladı. YOLO takibine geçiliyor...")
-                        speak("Hedef doğrulandı. Takibe geçiliyor.")
+                        speak("Target confirmed. Now tracking.")
                         tracker = Tracker()
                         last_good_frame = time.time()
                         last_alt_update = time.time()
@@ -2954,7 +2954,7 @@ def main():
                            f"birakiliyor, aramaya donuluyor.")
                     log_event(msg)
                     print(f"\n[!] {msg}")
-                    speak("Hedef takibi iptal edildi.")
+                    speak("Tracking cancelled.")
                     node.set_target_altitude(HOVER_ALTITUDE)
                     node.set_desired_twist(hold_altitude_twist(node.current_altitude()))
                     locked_track_id = None
@@ -3069,7 +3069,7 @@ def main():
                                         navdecision_to_twist(None, node.current_altitude()))
                                 if time.time() - last_good_frame > LOST_TARGET_GRACE:
                                     print("\n[!] Hedef kaybedildi. VLM aramasına (Mod 1) geri dönülüyor...")
-                                    speak("Hedef kaybedildi. Ortam tekrar taranıyor.")
+                                    speak("Target lost. Searching again.")
                                     node.set_target_altitude(HOVER_ALTITUDE)
                                     locked_track_id = None
                                     current_phase = PHASE_SEARCH
@@ -3324,7 +3324,7 @@ def main():
                             + (f", hedefe {_left:.2f}m" if _left is not None
                                else ", hedef konumu yok"))
                         print(f"\n[✓] Hedefe varıldı: {target}")
-                        speak(f"{target} hedefine varıldı.")
+                        speak(f"Arrived at the {target}.")
                         # Done means done. Continuing to chase something the
                         # drone is already on top of is what produced the loop
                         # above: too close to centre, too low to descend, so
@@ -3346,7 +3346,7 @@ def main():
 
                 if time.time() - last_good_frame > LOST_TARGET_GRACE:
                     print("\n[!] Hedef kaybedildi. VLM aramasına (Mod 1) geri dönülüyor...")
-                    speak("Hedef kaybedildi. Ortam tekrar taranıyor.")
+                    speak("Target lost. Searching again.")
                     # Back up to search altitude -- a wide view is what finds
                     # the target again; the tracking altitude was for closing in.
                     node.set_target_altitude(HOVER_ALTITUDE)

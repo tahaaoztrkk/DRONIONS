@@ -33,7 +33,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # searching. Existing keys still reach it, so pin GEMINI_MODEL=gemini-2.5-flash
 # in .env to reproduce the measurements in docs/, which were taken with it.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-VOICE_ENABLED = False
+VOICE_ENABLED = True
 
 # --- User pose, for describing where things are ---
 # The assistive answer is "your keys are two metres ahead of you, slightly
