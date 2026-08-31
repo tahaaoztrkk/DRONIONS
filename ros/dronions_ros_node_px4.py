@@ -1948,13 +1948,14 @@ def main():
                         near = nearest_known(target)
                         if near:
                             dialogue.say(
-                                f"{target} diye bir şey tanımıyorum. "
-                                f"{near} mı demek istediniz? Yine de aramayı "
-                                f"deniyorum ama emin olamam.")
+                                f"I do not know anything called a {target}. "
+                                f"Did you mean {near}? I will still try to "
+                                f"find it, but I cannot be certain.")
                         else:
                             dialogue.say(
-                                f"{target} tanımadığım bir nesne. Aramayı "
-                                f"deniyorum ama karşılaştıracak bir örneğim yok.")
+                                f"A {target} is not an object I know. I will "
+                                f"try to find it, but I have no reference to "
+                                f"compare against.")
                     else:
                         log_event(f"'{target}' icin {len(prompts)} prompt: "
                                   f"{', '.join(prompts)}")
@@ -2063,7 +2064,7 @@ def main():
                     pose_stale = True
                     log_event(f"Konum akisi durdu ({node.pose_age():.0f} s). "
                               f"Havada bekleniyor -- konuma dayali her sey askida.")
-                    dialogue.say("Konumumu kaybettim, olduğum yerde bekliyorum.")
+                    dialogue.say("I have lost my position. Holding where I am.")
                 node.set_desired_twist(hold_altitude_twist(node.current_altitude()))
                 time.sleep(0.1)
                 continue
@@ -2391,7 +2392,7 @@ def main():
                             log_event(f"Suprme sonucsuz -- {item['name']} "
                                       f"({item['xy'][0]:.1f}, {item['xy'][1]:.1f}) "
                                       f"yuzeyine gidip yakindan bakiliyor.")
-                            dialogue.say(f"{item['name']} üstüne yakından bakıyorum.")
+                            dialogue.say(f"Taking a closer look at the {item['name']}.")
                             continue
 
                 # Cheap layer first. YOLO is already on the GPU and costs
@@ -3140,9 +3141,9 @@ def main():
                                           "birakiliyor, arama yeniden "
                                           "baslatilmiyor.")
                                 dialogue.say(
-                                    f"{target} konumunu size söyledim, ama "
-                                    "yaklaşırken izini kaybediyorum. "
-                                    "Olduğum yerde bekliyorum.")
+                                    f"I have told you where the {target} is, but "
+                                    "I keep losing it as I close in. "
+                                    "Holding where I am.")
                                 target_last = target
                                 announced_arrival = True
                                 current_phase = PHASE_DONE
@@ -3194,12 +3195,12 @@ def main():
                         if target_surface_z is None and tgt_world is not None:
                             on_surface = tgt_world[2] > FLOOR_LEVEL_MAX
                         if on_surface:
-                            dialogue.say("Hedefe yaklaşamıyorum, bir yüzeyin "
-                                         "üstünde ve önümde engel var. "
-                                         "Konumu size söyledim.")
+                            dialogue.say("I cannot get closer. It is on a surface "
+                                         "and something is in my way. "
+                                         "I have told you where it is.")
                         else:
-                            dialogue.say("Hedefe yaklaşamıyorum, önümde bir "
-                                         "engel var. Konumu size söyledim.")
+                            dialogue.say("I cannot get closer, something is in "
+                                         "my way. I have told you where it is.")
                         node.set_target_altitude(HOVER_ALTITUDE)
                         node.set_desired_twist(
                             hold_altitude_twist(node.current_altitude()))
