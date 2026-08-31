@@ -327,6 +327,40 @@ genuinely firing, and detection still records honestly what was visible.
 
 ---
 
+## 13. The open vocabulary works in flight, on an object never trained
+
+Demonstrated end to end with a target the trained detector has never seen and
+that has no entry in the prompt database: a chair.
+
+```
+11:57:41  "A chair is not an object I know. I will try to find it,
+           but I have no reference to compare against."
+11:57:44  Model reply: [NONE]  x4          (still searching)
+11:58:53  Target confirmed. Now tracking.
+11:58:55  Target position (world) x=1.55 y=0.71
+          ^ source=world label=chair confidence=0.888  293x303 px
+11:58:56  ARRIVED: chair at altitude 1.58 m
+```
+
+True chair position (1.50, 0.90) — **0.20 m error, 75 seconds** from command to
+arrival.
+
+The decisive field is `source=world`: the candidate came from the **open**
+model, not the trained one. Section 10 measured that a fine-tuned YOLO-World
+scores 0/42 on unseen objects, so the same flight with that model would have
+found nothing. This single run is the live counterpart of that measurement.
+
+**The target was chosen from section 9, not by guesswork.** The open model
+finds furniture almost perfectly (chair 5/5, table 8/8, bookshelf 8/8) and small
+unseen objects not at all (bowl 0/8, bottle 0/4). Asking for a bottle would have
+failed, and failed for a measured reason rather than bad luck.
+
+**Also confirmed in this flight:** the spoken output and the console rendering
+are in English while the log file stays Turkish, and the honest "I do not know
+this object" message is what a user hears before the system tries anyway.
+
+---
+
 ## Refuted hypotheses
 
 What was tried and did not hold is also a result.
