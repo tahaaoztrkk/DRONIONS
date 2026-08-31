@@ -2592,6 +2592,19 @@ def main():
                         log_event(f"Gemini beklerken kayma: {moved:.2f} m, "
                                   f"{math.degrees(turned):.0f} derece "
                                   f"({vlm_took:.1f} s surdu).")
+                        # The search deadline measures sweeping, and the drone
+                        # is deliberately held still for the duration of a
+                        # call -- so every second spent waiting is a second the
+                        # area was not being covered. Counting it against the
+                        # sweep's clock makes a slow service look like a
+                        # thorough search that found nothing.
+                        #
+                        # Measured on a degraded day: six calls took 134 s of a
+                        # 149 s window, 90% of it, and the drone travelled from
+                        # (0.1, -0.1) to (0.7, 0.0) before announcing it had
+                        # searched the whole area. It had searched almost none
+                        # of it.
+                        dialogue.extend_search(vlm_took, reason="model bekleme")
                         if moved > VLM_DRIFT_MAX_M or turned > VLM_DRIFT_MAX_RAD:
                             # The hold did not hold -- wind, or the answer took
                             # long enough for the residual to matter. The crops
