@@ -79,7 +79,7 @@ from rcl_interfaces.srv import SetParameters
 
 from pymavlink import mavutil
 
-from config import VOICE_ENABLED, USER_POSITION, USER_YAW
+from config import VOICE_ENABLED, MIC_ENABLED, USER_POSITION, USER_YAW
 
 # Survey mode: skip the VLM, log what the detector ranked at every check, and
 # keep sweeping instead of handing off. Set by
@@ -1880,7 +1880,7 @@ def main():
 
     cmd_queue = queue.Queue()
     threading.Thread(target=get_console_input, args=(cmd_queue,), daemon=True).start()
-    if VOICE_ENABLED:
+    if MIC_ENABLED:
         threading.Thread(target=get_voice_input, args=(cmd_queue,), daemon=True).start()
 
     try:

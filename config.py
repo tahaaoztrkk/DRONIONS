@@ -34,6 +34,19 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # in .env to reproduce the measurements in docs/, which were taken with it.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 VOICE_ENABLED = True
+# Mikrofon, hoparlörden ayrı bir karar.
+#
+# Ikisi tek bayraga baglıydı ve sesli cikti acilinca her zaman acik bir
+# mikrofon da acildi. listen.py duydugu her seyi komut kuyruguna atiyor --
+# uyandirma kelimesi yok, filtre yok -- ve bir provada odada konusulanlar
+# sirayla arama hedefi oldu: "thank you", "tell me about pizza", "set alarm
+# for 3:20 a.m. tomorrow". Her yeni hedef aramayi sifirladigi icin drone
+# istenen nesneyi hic aramadi; disaridan bakinca tespit calismiyor gibi
+# gorundu.
+#
+# Varsayilan kapali: demoda komutlar klavyeden gelir ve odada konusulanlar
+# sisteme girmez. DRONIONS_MIC=1 ile acilir.
+MIC_ENABLED = os.getenv("DRONIONS_MIC", "0") not in ("", "0")
 
 # --- User pose, for describing where things are ---
 # The assistive answer is "your keys are two metres ahead of you, slightly
