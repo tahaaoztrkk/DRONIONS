@@ -28,3 +28,4 @@ weights/
 # alone are 30 MB of one room seen from 864 angles.
 data/room/
 runs/
+models/voices/

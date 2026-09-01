@@ -257,10 +257,48 @@ class Dialogue:
 
         return self._propose(raw)
 
+    # Words that mean the utterance is being said *to* the drone rather than
+    # naming a thing for it to find. An object name is a short noun phrase;
+    # "thank you", "tell me about pizza" and "do you want me to come back" are
+    # not, and each of them was accepted as a search target during a rehearsal
+    # -- the drone dutifully asked whether to look for "the thank you".
+    _NOT_A_TARGET = {
+        'thank', 'thanks', 'please', 'hello', 'hi', 'hey', 'ok', 'okay',
+        'you', 'your', 'yours', 'me', 'my', 'i', 'we', 'us', 'he', 'she',
+        'they', 'it', 'do', 'does', 'did', 'can', 'could', 'would', 'will',
+        'shall', 'should', 'tell', 'say', 'talk', 'come', 'go', 'about',
+        'sorry', 'good', 'well', 'now', 'again', 'back',
+        'tesekkur', 'tesekkurler', 'sagol', 'merhaba', 'selam', 'lutfen',
+        'bana', 'sen', 'sana', 'ben', 'bize', 'anlat', 'soyle', 'gel', 'git',
+    }
+    # An object name is short. Four words is already a sentence.
+    _MAX_TARGET_WORDS = 3
+
+    @classmethod
+    def _looks_like_target(cls, raw: str) -> bool:
+        words = [w.strip('.,!?;:"\'').lower() for w in raw.split()]
+        words = [w for w in words if w]
+        if not words or len(words) > cls._MAX_TARGET_WORDS:
+            return False
+        return not any(w in cls._NOT_A_TARGET for w in words)
+
     def _propose(self, raw):
         # Fall back to the lexicon, not to the raw string: an utterance with no
         # verb is still usually just the object's name.
-        target = parse_command(raw).get("target") or normalize_target(raw) or raw
+        parsed = parse_command(raw).get("target")
+        if parsed:
+            target = parsed
+        else:
+            # normalize_target returns unknown text unchanged, so it cannot be
+            # used to tell an object name from a sentence -- checking its
+            # result was the first version of this guard and it never fired.
+            # The utterance itself has to be judged before falling back to it.
+            if not self._looks_like_target(raw):
+                self.history.append(("user", raw))
+                self.say("I did not catch an object in that. "
+                         "What should I look for?")
+                return {"action": "ignored"}
+            target = normalize_target(raw) or raw
         self.pending_target = target
         self.history.append(("user", raw))
         self.say(f"Please confirm: you want me to look for the {target}. "
