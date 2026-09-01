@@ -44,9 +44,16 @@ VOICE_ENABLED = True
 # istenen nesneyi hic aramadi; disaridan bakinca tespit calismiyor gibi
 # gorundu.
 #
-# Varsayilan kapali: demoda komutlar klavyeden gelir ve odada konusulanlar
-# sisteme girmez. DRONIONS_MIC=1 ile acilir.
-MIC_ENABLED = os.getenv("DRONIONS_MIC", "0") not in ("", "0")
+# Varsayilan acik, cunku asistif bir cihazda sesli komut yardimci bir yol
+# degil asil arayuzdur: goremeyen bir kullanici klavye kullanmayacak.
+#
+# Gurultunun komut sanilmasi ayri bir sorundu ve ayri yerde cozuldu --
+# diyalog katmani artik bir ifadenin nesne adina benzeyip benzemedigine
+# bakiyor, yani "thank you" ya da "tell me about pizza" hedef olmuyor.
+# Mikrofonu kapatmak o sorunun cozumu degil, uzerini ortmesiydi.
+#
+# Kalabalik bir odada yine de kapatmak icin: DRONIONS_MIC=0
+MIC_ENABLED = os.getenv("DRONIONS_MIC", "1") not in ("", "0")
 
 # --- User pose, for describing where things are ---
 # The assistive answer is "your keys are two metres ahead of you, slightly
