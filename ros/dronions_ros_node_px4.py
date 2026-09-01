@@ -556,13 +556,14 @@ def vlm_failure_message(msg: str) -> str:
     distinction worth keeping, though: whether waiting would help.
     """
     if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-        return ("Görüş servisinin günlük kullanım hakkı doldu, şu anda "
-                "göremiyorum. Aramayı durduruyorum, yarın tekrar deneyebiliriz.")
+        return ("My vision service has used up its daily allowance, so I "
+                "cannot see right now. I am stopping the search; we can try "
+                "again tomorrow.")
     if "404" in msg or "NOT_FOUND" in msg:
-        return ("Görüş modeline erişemiyorum, ayarlarda güncellenmesi gerekiyor. "
-                "Aramayı durduruyorum.")
-    return ("Görüş servisine şu anda ulaşamıyorum, bu yüzden göremiyorum. "
-            "Aramayı durduruyorum, birazdan tekrar deneyebilirsiniz.")
+        return ("I cannot reach the vision model. It needs updating in the "
+                "settings. I am stopping the search.")
+    return ("I cannot reach the vision service at the moment, so I cannot "
+            "see. I am stopping the search; you can try again shortly.")
 
 
 def ref_path_for(target):
@@ -2309,7 +2310,8 @@ def main():
                     if target:
                         wx, wy = wanderer.current_waypoint()
                         _, wbrg = relative_to_user((wx, wy), USER_POSITION, USER_YAW)
-                        dialogue.narrate(f"{describe_direction(wbrg)} arıyorum.")
+                        dialogue.narrate(
+                            f"Searching {describe_direction(wbrg)}.")
                     # The sweep owns its own altitude now: it climbs to look over
                     # what it cannot get around, and drops back to cruise after.
                     node.set_target_altitude(wanderer.search_altitude())

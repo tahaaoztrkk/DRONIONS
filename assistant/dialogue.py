@@ -219,7 +219,7 @@ class Dialogue:
                 return self._propose(rest)
             self.say(f"Search for the {cancelled} cancelled. What should I look for?"
                      if cancelled else
-                     "Tamam, iptal ettim. Ne aramamı istersiniz?")
+                     "All right, cancelled. What should I look for?")
             return {"action": "cancel"}
 
         # Awaiting a yes/no on a proposed target.

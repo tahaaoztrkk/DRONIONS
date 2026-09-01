@@ -375,4 +375,9 @@ def answer_followup(frame: np.ndarray, question: str, history=None,
         r = client.models.generate_content(model=GEMINI_MODEL, contents=contents)
         return r.text.strip()
     except Exception as e:
-        return f"Soruyu cevaplayamadım: {str(e)[:100]}"
+        # What the user hears is a sentence, not a payload. The API's own text
+        # was being spoken verbatim here, so a 503 body -- braces, quotes and
+        # all -- was read aloud to someone who cannot see the screen. The
+        # detail still belongs in the log, and the caller logs the reply.
+        print(f"[VLM] follow-up failed: {type(e).__name__}: {str(e)[:200]}")
+        return "I could not answer that just now. Please ask me again."
