@@ -62,6 +62,20 @@ _CONSOLE_EN = [
      r"Model quota exhausted -- waiting \1s, then continuing the search."),
     (r"^Egitilmis model hedefi bulmadi -- VLM'e sorulmadi \((\d+) kare\)\.$",
      r"Trained detector did not find the target -- model not asked (\1 frames)."),
+    (r"^Uyari: '(.*?)' icin prompt genislemesi yok -- tek ifadeyle araniyor, "
+     r"tespit zayif olabilir\.$",
+     r"Warning: no prompt expansion for '\1' -- searching on the single "
+     r"phrase, detection may be weak."),
+    (r"^(\S+) tarandi, bulunamadi\. Kalan yuzeyler: (.*)$",
+     r"Scanned the \1, not found. Remaining surfaces: \2"),
+    (r"^Suprme sonucsuz -- (\S+) \((.*?)\) yuzeyine gidip yakindan bakiliyor\.$",
+     r"Sweep found nothing -- going to look closely at the \1 (\2)."),
+    (r"^(\S+) ustunde (\S+) m'de tarama basladi\.$",
+     r"Scanning above the \1 at \2 m."),
+    (r"^Son goruldugu yere donuluyor: \((.*?)\)\.$",
+     r"Returning to where it was last seen: (\1)."),
+    (r"^Yeni hedef -- once bulunulan yer taraniyor\.$",
+     r"New target -- sweeping the current position first."),
     (r"^PX4: (.*)$", r"PX4: \1"),
 ]
 _CONSOLE_EN = [(re.compile(p), r) for p, r in _CONSOLE_EN]
