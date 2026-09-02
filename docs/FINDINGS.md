@@ -445,9 +445,31 @@ failure. Recorded because the pattern is still live.
 
 ## Still open
 
-- Why the PX4 statustext channel is silent.
-- The phone's single 0.73 m deviation — established as not the viewing angle,
-  cause still unknown.
-- Position-stream dropouts after arrival — four in each of two runs, no visible
-  harm.
-- The mug campaign, which two attempts failed to collect.
+**The PX4 statustext channel is silent.** The node subscribes to
+`/mavros/statustext/recv` and has logged zero messages across every run, while
+PX4's own console is full of `commander`, `failsafe` and
+`health_and_arming_checks` reports. Everything PX4 says about itself — preflight
+failures, arming refusals, failsafe reasons — is invisible to the system.
+
+It has already cost real time: when a failsafe landed the aircraft mid-
+experiment the reason had to be guessed at from a tone-alarm line in PX4's
+console, and the guess was wrong. That console only exists because the test
+chain captures it; a deployment without the chain would have nothing at all.
+
+Likely cause, untested: MAVROS is attached to PX4's *Onboard* link (14580),
+while STATUSTEXT is normally streamed to the *Normal* link (18570) where a
+ground station would sit.
+
+**The mug's six-run campaign was never collected.** Two attempts failed
+entirely on quota and service errors (12 × 429, then 16 × 503 and 6 × 504), so
+the four-object table in section 11 stands at three. The mug itself works: it
+was found and reached in the interactive session (section 14) with 0.27 m of
+error. What is missing is the repeated measurement, not the capability.
+
+**The phone's single 0.73 m deviation** remains unexplained. It was established
+as not being the viewing angle (three independent measurements), it has not
+recurred, and the phone measured 0.13 m in the most recent session. One
+observation, still without a cause.
+
+**Position-stream dropouts after arrival** — four in each of two runs, no
+visible harm.
