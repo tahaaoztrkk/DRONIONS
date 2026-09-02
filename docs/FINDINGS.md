@@ -361,6 +361,35 @@ this object" message is what a user hears before the system tries anyway.
 
 ---
 
+## 14. All four targets in one interactive session
+
+The demo path, run from the keyboard with speech on, asking for each object in
+turn without restarting.
+
+| target | estimate | error | distance at arrival |
+|---|---|---|---|
+| laptop | (3.00, 0.23) | 0.05 m | 0.77 m |
+| book | (2.97, −0.25) | 0.09 m | 0.69 m |
+| phone | (2.63, −0.29) | 0.13 m | 0.76 m |
+| mug | (2.61, 0.51) | 0.27 m | 0.75 m |
+
+**4/4 found, tracked and reached.** Median error 0.13 m, matching the campaign
+figure from separate flights (section 11).
+
+**The climb gate fired twice**, moving from one object to the next — the exact
+case it was added for. Asking for a target while the drone is still climbing
+back to search altitude after arriving at something else had produced a correct
+identification the centring could not use: at 1.4 m altitude and 0.34 m range
+the phone sits at y=0.89 in the frame, and by the time the climb finished the
+sweep had turned away. Both transitions here succeeded.
+
+This is also the first end-to-end confirmation of the demo path as a whole:
+English speech through Piper, English console rendering over a Turkish log
+file, keyboard commands with confirmation, and consecutive targets in one
+session.
+
+---
+
 ## Refuted hypotheses
 
 What was tried and did not hold is also a result.
