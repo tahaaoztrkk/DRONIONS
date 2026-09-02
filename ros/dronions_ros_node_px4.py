@@ -1859,6 +1859,7 @@ def main():
     search_started_at = 0.0
     warmup_noted = False
     vlm_skipped = 0
+    climb_wait_noted = False
     inspect_item = None
     inspect_until = 0.0
     # Wall-clock grace, because the frame count turned out to mean something
@@ -1983,6 +1984,7 @@ def main():
                     search_started_at = time.time()
                     warmup_noted = False
                     vlm_skipped = 0
+                    climb_wait_noted = False
                     inspect_item = None
                     surfaces.reset_visits()
                     last_seen_xy = None
@@ -2488,8 +2490,38 @@ def main():
                 # charger it has never seen, uses_trained() is false and every
                 # candidate still goes to the model, which is the open
                 # vocabulary the project is built on.
-                worth_asking = True
-                if getattr(detector, "uses_trained", lambda: False)():
+                # Not while still climbing back to the search altitude.
+                #
+                # A new target resets the altitude to HOVER_ALTITUDE, and the
+                # climb takes a few seconds. Ask during it and the answer
+                # describes the view from wherever the drone happens to be --
+                # which, right after arriving at something else, is low and
+                # almost on top of the next object.
+                #
+                # Measured: the drone arrived at the book, was asked for the
+                # phone 0.44 m away, and the model confirmed it correctly at
+                # 1.4 m altitude and 0.34 m range. At that geometry the phone
+                # sits at y=0.89 in the frame, and centring cannot recover it;
+                # by the time the climb finished the sweep had yawed away and
+                # the phone was behind the drone. The call was spent for
+                # nothing.
+                #
+                # Deliberately not a rule about where in the frame the target
+                # appears: confirmations have a median y of 0.73 over 418
+                # recorded ones, and 34% sit above 0.85, so a frame-position
+                # rule would fire on a third of the flights that already work.
+                # This one would not have fired on any of the 24 campaign runs,
+                # where the target is given at hover altitude.
+                climbing = (node.current_altitude()
+                            < node.target_altitude() - ALT_TOLERANCE)
+                if climbing and search_candidates and not climb_wait_noted:
+                    climb_wait_noted = True
+                    log_event(f"Arama irtifasina cikiliyor "
+                              f"({node.current_altitude():.1f} -> "
+                              f"{node.target_altitude():.1f} m) -- once yukselip "
+                              f"sonra soruluyor.")
+                worth_asking = not climbing
+                if worth_asking and getattr(detector, "uses_trained", lambda: False)():
                     worth_asking = any(
                         getattr(c, "source", "") == "trained"
                         and c.label == target

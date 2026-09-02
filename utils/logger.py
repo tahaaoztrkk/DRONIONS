@@ -76,6 +76,9 @@ _CONSOLE_EN = [
      r"Returning to where it was last seen: (\1)."),
     (r"^Yeni hedef -- once bulunulan yer taraniyor\.$",
      r"New target -- sweeping the current position first."),
+    (r"^Arama irtifasina cikiliyor \((\S+) -> (\S+) m\) -- once yukselip "
+     r"sonra soruluyor\.$",
+     r"Climbing to search altitude (\1 -> \2 m) -- asking once up there."),
     (r"^PX4: (.*)$", r"PX4: \1"),
 ]
 _CONSOLE_EN = [(re.compile(p), r) for p, r in _CONSOLE_EN]
