@@ -388,6 +388,21 @@ English speech through Piper, English console rendering over a Turkish log
 file, keyboard commands with confirmation, and consecutive targets in one
 session.
 
+**The failure path was rehearsed too**, by disconnecting the network mid-run —
+which produces the same message as a 503 or 504 from the service:
+
+```
+11:29:20  [Errno -3] name resolution failure
+11:31:44  "I cannot reach the vision service at the moment, so I cannot see.
+           I am stopping the search; you can try again shortly."
+11:32:55  ARRIVED: book at altitude 1.61 m, 0.77 m      (network restored)
+```
+
+The drone states the fault and stops, rather than hanging silently, and the
+next command works once the service returns. This matters for a system whose
+user cannot see the screen: an unexplained silence and a failure are
+indistinguishable to them.
+
 ---
 
 ## Refuted hypotheses
