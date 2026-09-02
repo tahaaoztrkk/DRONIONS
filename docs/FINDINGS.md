@@ -456,9 +456,19 @@ experiment the reason had to be guessed at from a tone-alarm line in PX4's
 console, and the guess was wrong. That console only exists because the test
 chain captures it; a deployment without the chain would have nothing at all.
 
-Likely cause, untested: MAVROS is attached to PX4's *Onboard* link (14580),
-while STATUSTEXT is normally streamed to the *Normal* link (18570) where a
-ground station would sit.
+Measured directly. The topic exists and the plugin is loaded — MAVROS logs
+`Plugin sys_status initialized` and `/mavros/statustext/recv` is advertised —
+but 45 seconds of listening across an arm and a takeoff produced nothing, while
+PX4's own console emitted `WARN [commander] command 520 unsupported` twice plus
+its arming and takeoff notices in the same window. Nothing is wrong on the
+subscriber side: the topic is right, the plugin is up, and the node is
+listening.
+
+Remaining hypothesis, untested: PX4 streams STATUSTEXT to the *Normal* link
+(18570), where a ground station would sit, while MAVROS is attached to the
+*Onboard* link (14580) — which the setpoint path requires. Confirming it means
+either adding the stream to the Onboard link or putting a second consumer on
+18570; neither blocks the demo, so it is recorded rather than chased.
 
 **The mug's six-run campaign was never collected.** Two attempts failed
 entirely on quota and service errors (12 × 429, then 16 × 503 and 6 × 504), so
